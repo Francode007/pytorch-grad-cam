@@ -85,32 +85,37 @@ class CamDataset(Dataset):
         return cos.detach().cpu().numpy()
 
     def __getitem__(self, idx):
-
+        '''
+        Implementation with softmax weighing scheme, 
+        after applying cosine_similarity_
+        '''
         image_filepath = self.image_filepaths[idx]
         image = plt.imread(image_filepath)
         label = self.labels[idx]
         pred_label = self.class_to_label(label)
         input_tensor = self.transform_image(image)
         actual_output = self.forward_pass_actual(input_tensor)
-        weighted_final_cam_image = 0
         image, cam_per_layer, modified_output_per_layer = self.modified_cam(image, pred_label, self.conv_list)
-
+        cos_values = []
         for index, layer in enumerate(self.conv_list):
             intermediate_output = modified_output_per_layer[index]
-            cam_image = cam_per_layer[index][0, :] ### get the grayscaled cam using [0, :]
             intermediate_map = torch.from_numpy(intermediate_output)
-            cam_image = torch.from_numpy(cam_image)
             modified_output = self.hook_and_cook(layer, self.model, image, intermediate_map)
             cos_val = self.cosine_similarity_(actual_output, modified_output)
-            weighted_final_cam_image += cam_image * cos_val
+            cos_values.append(cos_val)
 
-        weighted_final_cam_image -= weighted_final_cam_image.min()
-        weighted_final_cam_image /= (1e-7 + weighted_final_cam_image.max())
-        ### haven't implemented softmax function yet; since cosine values are between [0, 1]; 
-        ### only implement softmax if using absolute diff [not recommended]
-        ### the weighing schema is not scaled properly if done like this
-        ### utilise softmax after collecting cosine values
-        image = torch.squeeze(image, dim = 0)
+        # Convert cos_values to a tensor and apply softmax
+        cos_values_tensor = torch.tensor(cos_values, dtype=torch.float32).squeeze()
+        softmax_weights = torch.softmax(cos_values_tensor, dim=0)
+
+        weighted_final_cam_image = 0
+        for i, weight in enumerate(softmax_weights):
+            cam_image = torch.from_numpy(cam_per_layer[i][0, :])
+            weighted_final_cam_image += weight * cam_image
+
+            weighted_final_cam_image -= weighted_final_cam_image.min()
+            weighted_final_cam_image /= (1e-7 + weighted_final_cam_image.max())
+            image = torch.squeeze(image, dim = 0)
 
         return image, weighted_final_cam_image
         # return image, gray_image
