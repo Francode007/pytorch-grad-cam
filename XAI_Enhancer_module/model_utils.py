@@ -30,7 +30,7 @@ BATCH_SIZE = 16
 # Class mappings
 CLASSES = ['IBS', 'Normal']
 CLASSES.sort()
-IDX_TO_CLASS = {i: j for i, j in enumerate(CLASSES)}
+IDX_TO_CLASS = dict(enumerate(CLASSES))
 CLASS_TO_IDX = {v: k for k, v in IDX_TO_CLASS.items()}
 
 # Image transformations
