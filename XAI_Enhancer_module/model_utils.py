@@ -110,7 +110,13 @@ def build_model_inf(model_name, num_classes=2, base_model_path=BASE_MODEL_PATH):
 def pred_model(model_name, num_classes=2, base_model_path=BASE_MODEL_PATH):
     device = get_device()
     model, model_path = build_model_inf(model_name, num_classes, base_model_path)
-    state_dict = torch.load(model_path, map_location=torch.device(device))
+    # Fix for PyTorch 2.6 weights_only default change
+    try:
+        state_dict = torch.load(model_path, map_location=torch.device(device), weights_only=True)
+    except Exception:
+        # Fallback to weights_only=False for older model files
+        state_dict = torch.load(model_path, map_location=torch.device(device), weights_only=False)
+    
     if 'model_state_dict' in state_dict:
         state_dict = state_dict['model_state_dict']
     model.load_state_dict(state_dict)
@@ -124,7 +130,13 @@ def pred_model(model_name, num_classes=2, base_model_path=BASE_MODEL_PATH):
 def test_model(model_name, num_classes=2, base_model_path=BASE_MODEL_PATH):
     device = get_device()
     model, model_path = build_model_inf(model_name, num_classes, base_model_path)
-    state_dict = torch.load(model_path, map_location=torch.device(device))
+    # Fix for PyTorch 2.6 weights_only default change
+    try:
+        state_dict = torch.load(model_path, map_location=torch.device(device), weights_only=True)
+    except Exception:
+        # Fallback to weights_only=False for older model files
+        state_dict = torch.load(model_path, map_location=torch.device(device), weights_only=False)
+    
     if 'model_state_dict' in state_dict:
         state_dict = state_dict['model_state_dict']
     model.load_state_dict(state_dict)
