@@ -117,7 +117,19 @@ class GradCAMEnhanced(BaseCAM):
             cam = np.maximum(cam, 0)
             scaled = scale_cam_image(cam, target_size)
             cam_per_target_layer.append(scaled[:, None, :])
-            intermediate_act_per_target_layer.append(masked_activations[:, None, :])
+            
+            # Fix the dimension issue with masked_activations
+            # masked_activations shape is typically (batch, channels, height, width)
+            # We need to handle it correctly for the saliency computation
+            if masked_activations.ndim == 4:
+                # For 4D: (batch, channels, H, W) -> keep as is for the intermediate output
+                intermediate_act_per_target_layer.append(masked_activations)
+            elif masked_activations.ndim == 5:
+                # For 5D: (batch, channels, D, H, W) -> keep as is for the intermediate output  
+                intermediate_act_per_target_layer.append(masked_activations)
+            else:
+                # Fallback: just append as is
+                intermediate_act_per_target_layer.append(masked_activations)
 
         return cam_per_target_layer, intermediate_act_per_target_layer
     

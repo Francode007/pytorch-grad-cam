@@ -18,7 +18,7 @@ from pathlib import Path
 from XAI_Enhancer_module.optimized_cam_extractor import OptimizedCamExtractor, create_optimized_dataloader
 from XAI_Enhancer_module.optimized_predictor import get_optimized_predictions, PredictionManager
 from XAI_Enhancer_module.metrics.evaluation import get_metrics, CausalMetric
-from XAI_Enhancer_module.model_utils import test_model, get_val_dataloader
+from XAI_Enhancer_module.model_utils import test_model, get_val_dataloader, get_device
 from XAI_Enhancer_module.GradCAM_enhanced import GradCAMEnhanced
 
 
@@ -30,45 +30,50 @@ class XAIEvaluationSuite:
     def __init__(self, 
                  model_name: str,
                  conv_layers: List[nn.Module] = None,
-                 output_dir: str = "./evaluation_results"):
+                 output_dir: str = "./evaluation_results",
+                 device_preference: str = "auto"):
         """
-        Initialize the evaluation suite.
+        Initialize the XAI evaluation suite.
         
         Args:
             model_name: Name of the model to evaluate
-            conv_layers: List of convolutional layers for CAM
-            output_dir: Directory to save evaluation results
+            conv_layers: Optional list of specific convolutional layers
+            output_dir: Directory to save results
+            device_preference: Device preference ("auto", "cuda", "mps", "cpu")
         """
         self.model_name = model_name
+        self.device_preference = device_preference
+        self.device = get_device(device_preference)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Load model
-        self.model = test_model(model_name)
-        self.device = next(self.model.parameters()).device
+        print(f"🔧 Initializing XAI Evaluation Suite")
+        print(f"   Model: {model_name}")
+        print(f"   Device: {self.device}")
+        print(f"   Output: {output_dir}")
         
-        # Set up convolutional layers if not provided
+        # Load model
+        self.model = test_model(model_name, device_preference=device_preference)
+        
+        # Set convolutional layers
         if conv_layers is None:
             self.conv_layers = self._get_default_conv_layers()
+            print(f"   Using default conv layers: {len(self.conv_layers)} layers")
         else:
             self.conv_layers = conv_layers
+            print(f"   Using custom conv layers: {len(self.conv_layers)} layers")
         
-        # Initialize prediction manager
-        self.prediction_manager = PredictionManager()
-        
-        # Initialize optimized CAM extractor
+        # Initialize components
         self.cam_extractor = OptimizedCamExtractor(
-            self.model, 
-            self.model_name, 
-            self.conv_layers
+            self.model, model_name, self.conv_layers, device_preference=device_preference
         )
+        self.prediction_manager = PredictionManager(device_preference=device_preference)
         
-        # Get evaluation metrics
+        # Initialize metrics
         img_size = 224 if not model_name.startswith("b4") else 384
-        self.insertion_metric, self.deletion_metric, self.road_metric = get_metrics(
-            self.model, 
-            self.model_name, 
-            img_size
+        print(f"   Calling get_metrics with model={type(self.model)}, model_name={model_name}, img_size={img_size}")
+        self.insertion, self.deletion, self.road = get_metrics(
+            self.model, model_name, img_size
         )
         
         # Results storage
@@ -466,7 +471,7 @@ class XAIEvaluationSuite:
         results_df = pd.DataFrame(results)
         
         # Sort by insertion AUC (higher is better)
-        results_df = results_df.sort_values('insertion_auc', ascending=False, na_last=True)
+        results_df = results_df.sort_values('insertion_auc', ascending=False, na_position='last')
         
         # Save results
         output_file = self.output_dir / f"individual_layers_experiment_{self.model_name}.csv"
@@ -710,7 +715,7 @@ class XAIEvaluationSuite:
         
         # Evaluate insertion
         print("Computing insertion scores...")
-        insertion_scores = self.insertion_metric.evaluate(
+        insertion_scores = self.insertion.evaluate(
             images_tensor, 
             saliency_maps, 
             batch_size
@@ -718,7 +723,7 @@ class XAIEvaluationSuite:
         
         # Evaluate deletion
         print("Computing deletion scores...")
-        deletion_scores = self.deletion_metric.evaluate(
+        deletion_scores = self.deletion.evaluate(
             images_tensor, 
             saliency_maps, 
             batch_size
@@ -758,18 +763,21 @@ class XAIEvaluationSuite:
             image = images_tensor[i:i+1]
             saliency = saliency_maps[i]
             
-            # Get model prediction
+            # Get model prediction and create targets
             with torch.no_grad():
                 pred = self.model(image)
                 pred_class = torch.argmax(pred, dim=1).item()
             
+            # Import ClassifierOutputTarget
+            from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+            targets = [ClassifierOutputTarget(pred_class)]
+            
             # Compute ROAD score
-            road_score = self.road_metric(
-                model=self.model,
+            road_score = self.road(
                 input_tensor=image,
-                targets=None,  # Use predicted class
-                cam=saliency,
-                verbose=False
+                cams=saliency[np.newaxis, :, :],  # Add batch dimension
+                targets=targets,
+                model=self.model
             )
             
             road_results.append(road_score)
@@ -808,9 +816,14 @@ class XAIEvaluationSuite:
             image_paths, batch_size
         )
         
-        # Run insertion/deletion evaluation
+        # Run insertion/deletion evaluation  
+        # Adjust batch size to ensure it divides evenly into the number of images
+        eval_batch_size = min(batch_size, len(images))
+        while len(images) % eval_batch_size != 0 and eval_batch_size > 1:
+            eval_batch_size -= 1
+        
         ins_del_results = self.evaluate_insertion_deletion(
-            images, saliency_maps, batch_size=4
+            images, saliency_maps, batch_size=eval_batch_size
         )
         
         # Run ROAD evaluation
@@ -919,7 +932,7 @@ class XAIEvaluationSuite:
         comparison_df = pd.DataFrame(results)
         
         # Sort by insertion AUC (higher is better)
-        comparison_df = comparison_df.sort_values('insertion_auc', ascending=False, na_last=True)
+        comparison_df = comparison_df.sort_values('insertion_auc', ascending=False, na_position='last')
         
         # Save results
         comparison_df.to_csv(self.output_dir / "layer_combinations_comparison.csv", index=False)
@@ -1270,7 +1283,8 @@ class XAIEvaluationSuite:
 
 def evaluate_multiple_models(model_names: List[str], 
                            image_paths: List[str] = None,
-                           output_dir: str = "./evaluation_results") -> pd.DataFrame:
+                           output_dir: str = "./evaluation_results",
+                           device_preference: str = "auto") -> pd.DataFrame:
     """
     Evaluate multiple models and compare results.
     
@@ -1278,6 +1292,7 @@ def evaluate_multiple_models(model_names: List[str],
         model_names: List of model names to evaluate
         image_paths: Optional list of image paths
         output_dir: Output directory for results
+        device_preference: Device preference ("auto", "cuda", "mps", "cpu")
         
     Returns:
         DataFrame with comparison results
@@ -1289,7 +1304,11 @@ def evaluate_multiple_models(model_names: List[str],
         print(f"Evaluating {model_name}")
         print(f"{'='*50}")
         
-        evaluator = XAIEvaluationSuite(model_name, output_dir=output_dir)
+        evaluator = XAIEvaluationSuite(
+            model_name, 
+            output_dir=f"{output_dir}/{model_name}",
+            device_preference=device_preference
+        )
         results = evaluator.run_full_evaluation(image_paths)
         
         all_results.append({

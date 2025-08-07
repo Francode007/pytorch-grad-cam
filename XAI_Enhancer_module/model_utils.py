@@ -12,13 +12,40 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 # Device configuration
-def get_device():
-    if torch.cuda.is_available():
-        return "cuda"
-    elif torch.backends.mps.is_available():
-        return "mps"
-    else:
+def get_device(device_preference: str = "auto"):
+    """
+    Get the appropriate device based on preference and availability.
+    
+    Args:
+        device_preference: Preferred device ("auto", "cuda", "mps", "cpu")
+        
+    Returns:
+        Device string
+    """
+    if device_preference == "auto":
+        if torch.cuda.is_available():
+            return "cuda"
+        elif torch.backends.mps.is_available():
+            return "mps"
+        else:
+            return "cpu"
+    elif device_preference == "cuda":
+        if torch.cuda.is_available():
+            return "cuda"
+        else:
+            print("Warning: CUDA not available, falling back to CPU")
+            return "cpu"
+    elif device_preference == "mps":
+        if torch.backends.mps.is_available():
+            return "mps"
+        else:
+            print("Warning: MPS not available, falling back to CPU")
+            return "cpu"
+    elif device_preference == "cpu":
         return "cpu"
+    else:
+        print(f"Warning: Unknown device '{device_preference}', using auto detection")
+        return get_device("auto")
 
 # Paths and constants
 BASE_MODEL_PATH = "/Users/f0s03xp/Desktop/IBS-research/models"
@@ -71,7 +98,7 @@ def get_validation_paths(data_path):
 def get_val_dataloader(model_name):
     valid_image_paths = get_validation_paths(TRAIN_DATA_PATH)
     dataset = IBSValDataset(valid_image_paths, model_name)
-    return DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
+    return DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
 # Model builder
 def build_model_inf(model_name, num_classes=2, base_model_path=BASE_MODEL_PATH):
@@ -107,8 +134,8 @@ def build_model_inf(model_name, num_classes=2, base_model_path=BASE_MODEL_PATH):
         raise ValueError(f"Unknown model_name: {model_name}")
     return model, model_path
 
-def pred_model(model_name, num_classes=2, base_model_path=BASE_MODEL_PATH):
-    device = get_device()
+def pred_model(model_name, num_classes=2, base_model_path=BASE_MODEL_PATH, device_preference="auto"):
+    device = get_device(device_preference)
     model, model_path = build_model_inf(model_name, num_classes, base_model_path)
     # Fix for PyTorch 2.6 weights_only default change
     try:
@@ -127,8 +154,8 @@ def pred_model(model_name, num_classes=2, base_model_path=BASE_MODEL_PATH):
     model.to(device)
     return model
 
-def test_model(model_name, num_classes=2, base_model_path=BASE_MODEL_PATH):
-    device = get_device()
+def test_model(model_name, num_classes=2, base_model_path=BASE_MODEL_PATH, device_preference="auto"):
+    device = get_device(device_preference)
     model, model_path = build_model_inf(model_name, num_classes, base_model_path)
     # Fix for PyTorch 2.6 weights_only default change
     try:
@@ -145,19 +172,19 @@ def test_model(model_name, num_classes=2, base_model_path=BASE_MODEL_PATH):
     return model
 
 # Inference
-def inference(model, testloader, model_name):
+# Inference
+def inference(model, testloader, model_name, device_preference="auto"):
     print(f"Predicting labels for model: {model_name}")
     predictions, image_filepaths, image_names = [], [], []
-    device = get_device()
+    device = get_device(device_preference)
     with torch.no_grad():
         for images, names, filepaths in tqdm(testloader, total=len(testloader)):
             images = images.to(device)
             outputs = model(images)
-            _, preds = torch.max(outputs.data, 1)
-            preds = [IDX_TO_CLASS[p.item()] for p in preds]
-            predictions.extend(preds)
-            image_filepaths.extend(filepaths)
+            _, predicted = torch.max(outputs.data, 1)
+            predictions.extend(predicted.cpu().numpy())
             image_names.extend(names)
+            image_filepaths.extend(filepaths)
     return predictions, image_filepaths, image_names
 
 # Example usage (uncomment to run)

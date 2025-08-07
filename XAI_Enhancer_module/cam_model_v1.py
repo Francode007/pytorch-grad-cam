@@ -15,7 +15,11 @@ from pytorch_grad_cam import GradCAM, HiResCAM, GradCAMPlusPlus, EigenCAM, Eigen
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from XAI_Enhancer_module.model_utils import get_device, transformations, CLASS_TO_IDX, IDX_TO_CLASS
 
-device = get_device()
+# Updated to use device preference
+def get_device_for_cam(device_preference="auto"):
+    return get_device(device_preference)
+
+device = get_device_for_cam()
 
 class CamDataset(Dataset):
     def __init__(self, cam, model_name, image_filepaths, labels, model, conv_list):

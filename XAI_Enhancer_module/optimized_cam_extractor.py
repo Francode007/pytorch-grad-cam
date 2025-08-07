@@ -23,7 +23,7 @@ class OptimizedCamExtractor:
     Reduces redundant computations and improves efficiency.
     """
     
-    def __init__(self, model, model_name: str, conv_layers: List[nn.Module]):
+    def __init__(self, model, model_name: str, conv_layers: List[nn.Module], device_preference: str = "auto"):
         """
         Initialize the CAM extractor.
         
@@ -31,11 +31,12 @@ class OptimizedCamExtractor:
             model: The trained neural network model
             model_name: Name of the model (affects image size)
             conv_layers: List of convolutional layers for CAM computation
+            device_preference: Device preference ("auto", "cuda", "mps", "cpu")
         """
         self.model = model
         self.model_name = model_name
         self.conv_layers = conv_layers
-        self.device = get_device()
+        self.device = get_device(device_preference)
         self.img_size = 384 if model_name.startswith("b4") else 224
         
         # Initialize enhanced GradCAM
@@ -110,10 +111,35 @@ class OptimizedCamExtractor:
         for layer_idx, (layer, modified_activation) in enumerate(zip(self.conv_layers, modified_activations_per_layer)):
             # Register hook for this layer
             hook_handle = None
-            modified_activation_tensor = torch.from_numpy(modified_activation).to(self.device)
+            
+            # Ensure the modified activation has the right shape
+            # The modified_activation should match the output shape of the layer
+            if isinstance(modified_activation, np.ndarray):
+                modified_activation_tensor = torch.from_numpy(modified_activation).to(self.device)
+            else:
+                modified_activation_tensor = modified_activation.to(self.device)
+                
+            # If the tensor has an extra batch dimension that we added, we need to remove it
+            # to match the expected layer output shape
+            if modified_activation_tensor.dim() == 5:
+                # Remove the extra dimension: (1, 1, C, H, W) -> (1, C, H, W)
+                modified_activation_tensor = modified_activation_tensor.squeeze(1)
+            elif modified_activation_tensor.dim() == 6:
+                # Remove extra dimensions: (1, 1, C, D, H, W) -> (1, C, D, H, W)  
+                modified_activation_tensor = modified_activation_tensor.squeeze(1)
             
             def create_hook(mod_act):
                 def hook_fn(module, input, output):
+                    # Ensure the replacement tensor has the same shape as the original output
+                    if mod_act.shape != output.shape:
+                        # Try to reshape to match output
+                        try:
+                            reshaped_act = mod_act.view(output.shape)
+                            return reshaped_act
+                        except:
+                            # If reshaping fails, return the original output
+                            print(f"Warning: Could not reshape modified activation from {mod_act.shape} to {output.shape}")
+                            return output
                     return mod_act
                 return hook_fn
             
@@ -264,7 +290,8 @@ def create_optimized_dataloader(image_paths: List[str],
                               model_name: str,
                               conv_layers: List[nn.Module],
                               batch_size: int = 8,
-                              num_workers: int = 2) -> DataLoader:
+                              num_workers: int = 0,
+                              device_preference: str = "auto") -> DataLoader:
     """
     Create an optimized DataLoader for batch CAM extraction.
     
@@ -276,17 +303,18 @@ def create_optimized_dataloader(image_paths: List[str],
         conv_layers: List of convolutional layers
         batch_size: Batch size for DataLoader
         num_workers: Number of worker processes
+        device_preference: Device preference ("auto", "cuda", "mps", "cpu")
         
     Returns:
         Optimized DataLoader
     """
-    cam_extractor = OptimizedCamExtractor(model, model_name, conv_layers)
+    cam_extractor = OptimizedCamExtractor(model, model_name, conv_layers, device_preference=device_preference)
     dataset = OptimizedCamDataset(image_paths, predicted_labels, cam_extractor)
     
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True if torch.cuda.is_available() else False
+        num_workers=0,
+        pin_memory=False
     )

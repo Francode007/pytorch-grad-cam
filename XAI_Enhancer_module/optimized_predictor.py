@@ -18,16 +18,18 @@ class OptimizedPredictor:
     Optimized predictor that pre-computes and caches model predictions.
     """
     
-    def __init__(self, model, model_name: str):
+    def __init__(self, model, model_name: str, device_preference: str = "auto"):
         """
         Initialize the predictor.
         
         Args:
             model: The trained model for prediction
             model_name: Name of the model
+            device_preference: Device preference ("auto", "cuda", "mps", "cpu")
         """
         self.model = model
         self.model_name = model_name
+        self.device_preference = device_preference
         self.device = next(model.parameters()).device
         
         # Cache for predictions
@@ -104,7 +106,7 @@ class OptimizedPredictor:
             dataset, 
             batch_size=16, 
             shuffle=False, 
-            num_workers=2
+            num_workers=0
         )
         
         predictions = []
@@ -153,7 +155,8 @@ class OptimizedPredictor:
 
 def get_optimized_predictions(model_name: str, 
                             image_paths: List[str] = None,
-                            use_validation_set: bool = True) -> Tuple[List[int], List[str], List[str]]:
+                            use_validation_set: bool = True,
+                            device_preference: str = "auto") -> Tuple[List[int], List[str], List[str]]:
     """
     Get optimized predictions for images.
     
@@ -161,13 +164,14 @@ def get_optimized_predictions(model_name: str,
         model_name: Name of the model to use
         image_paths: Optional list of specific image paths
         use_validation_set: Whether to use the default validation set
+        device_preference: Device preference ("auto", "cuda", "mps", "cpu")
         
     Returns:
         Tuple of (predicted_labels, predicted_class_names, image_paths)
     """
     # Load the model
-    model = test_model(model_name)
-    predictor = OptimizedPredictor(model, model_name)
+    model = test_model(model_name, device_preference=device_preference)
+    predictor = OptimizedPredictor(model, model_name, device_preference=device_preference)
     
     if use_validation_set and image_paths is None:
         # Use the validation dataloader
@@ -188,7 +192,8 @@ class PredictionManager:
     Manager class for handling predictions across multiple models and datasets.
     """
     
-    def __init__(self):
+    def __init__(self, device_preference: str = "auto"):
+        self.device_preference = device_preference
         self.predictors = {}
         self.cached_results = {}
     
@@ -203,8 +208,8 @@ class PredictionManager:
             OptimizedPredictor instance
         """
         if model_name not in self.predictors:
-            model = test_model(model_name)
-            self.predictors[model_name] = OptimizedPredictor(model, model_name)
+            model = test_model(model_name, device_preference=self.device_preference)
+            self.predictors[model_name] = OptimizedPredictor(model, model_name, self.device_preference)
         
         return self.predictors[model_name]
     
