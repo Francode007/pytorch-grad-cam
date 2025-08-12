@@ -13,7 +13,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
-from XAI_Enhancer_module.xai_evaluation_suite import XAIEvaluationSuite, evaluate_multiple_models
+from XAI_Enhancer_module.enhanced_proper_auc_evaluator import EnhancedProperAUCEvaluator
 from XAI_Enhancer_module.model_utils import get_validation_paths, TRAIN_DATA_PATH
 
 
@@ -160,34 +160,28 @@ Available Devices:
 
 
 def run_single_evaluation(args):
-    """Run single model evaluation."""
+    """Run single model evaluation using ProperAUCEvaluator."""
     print(f"\n{'='*60}")
     print(f"Single Model Evaluation: {args.model}")
     print(f"{'='*60}")
     
-    evaluator = XAIEvaluationSuite(
+    evaluator = EnhancedProperAUCEvaluator(
         model_name=args.model,
-        output_dir=args.output_dir,
         device_preference=args.device
     )
     
-    # Get image paths
-    if args.image_paths:
-        image_paths = args.image_paths
-    else:
-        val_paths = get_validation_paths(TRAIN_DATA_PATH)
-        if args.max_images:
-            image_paths = val_paths[:args.max_images]
-        else:
-            image_paths = None
-    
-    results = evaluator.run_full_evaluation(
-        image_paths=image_paths,
-        batch_size=args.batch_size,
-        save_results=True
+    # Evaluate Enhanced CAM
+    enhanced_results = evaluator.evaluate_enhanced_cam(
+        max_images=args.max_images,
+        step_size=50  # Use proper step size
     )
     
-    print(f"\n🎉 Evaluation completed!")
+    print(f"\nResults for {args.model} (on {enhanced_results['num_images']} images):")
+    print(f"  Insertion AUC: {enhanced_results['insertion_auc_mean']:.4f}")
+    print(f"  Deletion AUC: {enhanced_results['deletion_auc_mean']:.4f}")
+    print(f"  ROAD Mean: {enhanced_results['road_mean']:.4f}")
+    
+    return enhanced_results
     print(f"Results for {args.model}:")
     print(f"  Insertion AUC: {results['insertion_auc']:.4f}")
     print(f"  Deletion AUC: {results['deletion_auc']:.4f}")
@@ -201,162 +195,100 @@ def run_single_evaluation(args):
 
 
 def run_comparison_evaluation(args):
-    """Run multiple models comparison."""
+    """Run multiple model comparison using ProperAUCEvaluator."""
     print(f"\n{'='*60}")
     print(f"Multiple Models Comparison: {', '.join(args.models)}")
     print(f"{'='*60}")
     
-    # Get image paths
-    if args.image_paths:
-        image_paths = args.image_paths
-    elif args.max_images:
-        val_paths = get_validation_paths(TRAIN_DATA_PATH)
-        image_paths = val_paths[:args.max_images]
-    else:
-        image_paths = None
+    results = []
     
-    comparison_df = evaluate_multiple_models(
-        model_names=args.models,
-        image_paths=image_paths,
-        output_dir=args.output_dir,
-        device_preference=args.device
-    )
+    for model in args.models:
+        print(f"Evaluating {model}...")
+        evaluator = EnhancedProperAUCEvaluator(
+            model_name=model,
+            device_preference=args.device
+        )
+        
+        # Evaluate Enhanced CAM for this model
+        enhanced_results = evaluator.evaluate_enhanced_cam(
+            max_images=args.max_images,
+            step_size=50
+        )
+        
+        # Add to results
+        results.append({
+            'Model': model,
+            'Insertion AUC': f"{enhanced_results['insertion_auc_mean']:.4f} ± {enhanced_results['insertion_auc_std']:.4f}",
+            'Deletion AUC': f"{enhanced_results['deletion_auc_mean']:.4f} ± {enhanced_results['deletion_auc_std']:.4f}",
+            'ROAD Score': f"{enhanced_results['road_mean']:.4f} ± {enhanced_results['road_std']:.4f}",
+            'Num Images': enhanced_results['num_images']
+        })
     
-    print(f"\n🎉 Comparison completed!")
-    print("\nComparison Results:")
+    # Create comparison DataFrame
+    import pandas as pd
+    comparison_df = pd.DataFrame(results)
+    
+    print(f"🎉 Comparison completed!")
+    print("Comparison Results:")
     print(comparison_df.to_string(index=False))
     
     return comparison_df
 
 
 def run_layer_analysis(args):
-    """Run layer combination analysis."""
+    """Run layer analysis - simplified version."""
     print(f"\n{'='*60}")
     print(f"Layer Analysis: {args.model}")
     print(f"{'='*60}")
-    
-    evaluator = XAIEvaluationSuite(
-        model_name=args.model,
-        output_dir=args.output_dir,
-        device_preference=args.device
-    )
-    
-    # Print layer summary
-    evaluator.print_conv_layer_summary()
-    
-    # Get combinations for experimentation
-    combinations = evaluator.get_layer_combinations_for_experimentation()
-    print(f"\nGenerated {len(combinations)} different layer combinations for testing")
-    
-    # Get image paths
-    if args.image_paths:
-        image_paths = args.image_paths
-    else:
-        val_paths = get_validation_paths(TRAIN_DATA_PATH)
-        test_paths = val_paths[:args.max_images] if args.max_images else val_paths[:10]
-        image_paths = test_paths
-    
-    print(f"\nTesting layer combinations on {len(image_paths)} images...")
-    combo_results = evaluator.evaluate_layer_combinations(
-        layer_combinations=combinations[:args.max_combinations],
-        image_paths=image_paths,
-        max_combinations=args.max_combinations
-    )
-    
-    print(f"\n🎉 Layer combination evaluation completed!")
-    return combo_results
+    print("⚠️  Layer analysis feature is being updated.")
+    print("   Use --eval-type single or --eval-type quick for current evaluation.")
+    return None
 
 
 def run_individual_layers_evaluation(args):
-    """Run individual layer experimentation."""
+    """Run individual layer evaluation - simplified version."""
     print(f"\n{'='*60}")
     print(f"Individual Layer Experimentation: {args.model}")
     print(f"{'='*60}")
-    
-    evaluator = XAIEvaluationSuite(
-        model_name=args.model,
-        output_dir=args.output_dir,
-        device_preference=args.device
-    )
-    
-    # Get image paths
-    if args.image_paths:
-        image_paths = args.image_paths
-    else:
-        val_paths = get_validation_paths(TRAIN_DATA_PATH)
-        test_paths = val_paths[:args.max_images] if args.max_images else val_paths[:20]
-        image_paths = test_paths
-    
-    results = evaluator.experiment_all_individual_conv_layers(
-        image_paths=image_paths,
-        max_layers=args.max_layers,
-        batch_size=args.batch_size
-    )
-    
-    print(f"\n🎉 Individual layer experimentation completed!")
-    return results
+    print("⚠️  Individual layer experimentation feature is being updated.")
+    print("   Use --eval-type single or --eval-type quick for current evaluation.")
+    return None
 
 
 def run_comprehensive_evaluation(args):
-    """Run comprehensive layer experimentation."""
+    """Run comprehensive evaluation - simplified version."""
     print(f"\n{'='*60}")
     print(f"Comprehensive Layer Experimentation: {args.model}")
     print(f"{'='*60}")
-    
-    evaluator = XAIEvaluationSuite(
-        model_name=args.model,
-        output_dir=args.output_dir,
-        device_preference=args.device
-    )
-    
-    # Get image paths
-    if args.image_paths:
-        image_paths = args.image_paths
-    else:
-        val_paths = get_validation_paths(TRAIN_DATA_PATH)
-        test_paths = val_paths[:args.max_images] if args.max_images else val_paths[:30]
-        image_paths = test_paths
-    
-    results = evaluator.comprehensive_layer_experimentation(
-        image_paths=image_paths,
-        max_individual_layers=args.max_layers,
-        max_combinations=args.max_combinations,
-        save_detailed_results=args.save_detailed
-    )
-    
-    print(f"\n🎉 Comprehensive experimentation completed!")
-    return results
+    print("⚠️  Comprehensive experimentation feature is being updated.")
+    print("   Use --eval-type single or --eval-type quick for current evaluation.")
+    return None
 
 
 def run_quick_test(args):
-    """Run quick test with minimal data."""
+    """Run quick test using ProperAUCEvaluator."""
     print(f"\n{'='*60}")
     print(f"Quick Test: {args.model}")
     print(f"{'='*60}")
     
-    evaluator = XAIEvaluationSuite(
+    evaluator = EnhancedProperAUCEvaluator(
         model_name=args.model,
-        output_dir=args.output_dir,
         device_preference=args.device
     )
     
-    # Use minimal data
-    val_paths = get_validation_paths(TRAIN_DATA_PATH)
-    test_paths = val_paths[:args.max_images] if args.max_images else val_paths[:5]
-    
-    results = evaluator.run_full_evaluation(
-        image_paths=test_paths,
-        batch_size=min(args.batch_size, 4),
-        save_results=True
+    # Quick comparison with Enhanced CAM vs GradCAM
+    comparison_df = evaluator.compare_enhanced_vs_standard(
+        standard_methods=["GradCAM"],
+        max_images=args.max_images,
+        step_size=50
     )
     
-    print(f"\n🎉 Quick test completed!")
-    print(f"Results for {args.model} (on {len(test_paths)} images):")
-    print(f"  Insertion AUC: {results['insertion_auc']:.4f}")
-    print(f"  Deletion AUC: {results['deletion_auc']:.4f}")
-    print(f"  ROAD Mean: {results['road_mean']:.4f}")
+    print(f"\n{'='*60}")
+    print("QUICK TEST RESULTS:")
+    print(f"{'='*60}")
+    print(comparison_df.to_string(index=False))
     
-    return results
+    return comparison_df
 
 
 def main():

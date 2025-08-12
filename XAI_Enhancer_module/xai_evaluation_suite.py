@@ -69,11 +69,11 @@ class XAIEvaluationSuite:
         )
         self.prediction_manager = PredictionManager(device_preference=device_preference)
         
-        # Initialize metrics
-        img_size = 224 if not model_name.startswith("b4") else 384
-        print(f"   Calling get_metrics with model={type(self.model)}, model_name={model_name}, img_size={img_size}")
+        # Initialize metrics with corrected step size
+        step_size = 50  # Use proper step size instead of img_size
+        print(f"   Calling get_metrics with model={type(self.model)}, model_name={model_name}, step_size={step_size}")
         self.insertion, self.deletion, self.road = get_metrics(
-            self.model, model_name, img_size
+            self.model, model_name, step_size=step_size, device_preference=device_preference
         )
         
         # Results storage
