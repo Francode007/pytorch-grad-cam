@@ -134,6 +134,137 @@ with GradCAM(model=model, target_layers=target_layers) as cam:
 [cam.py](https://github.com/jacobgil/pytorch-grad-cam/blob/master/cam.py) has a more detailed usage example.
 
 ----------
+
+# Enhanced XAI Evaluation Module
+
+This repository includes an advanced **XAI Enhancer Module** that extends the standard CAM methods with enhanced evaluation capabilities and novel layer selection strategies.
+
+## Directory Structure
+
+```
+XAI_Enhancer_module/
+├── evaluator/
+│   ├── enhanced_proper_auc_evaluator.py    # Enhanced evaluator with multi-layer support
+│   └── proper_auc_evaluation.py            # Base AUC evaluation framework
+├── enhanced_cams/
+│   └── GradCAM_enhanced.py                 # Enhanced GradCAM implementation
+├── utils/
+│   ├── model_utils.py                      # Model loading and utilities
+│   ├── optimized_cam_extractor.py          # Optimized CAM extraction
+│   └── optimized_predictor.py              # Efficient prediction caching
+├── modular_xai_evaluation.py               # Main evaluation script
+└── layer_mode_comparison.py                # Layer mode comparison utility
+```
+
+## Enhanced CAM with Multi-Layer Support
+
+The Enhanced CAM method introduces sophisticated layer selection modes that leverage information from multiple convolutional layers:
+
+### Layer Selection Modes
+
+1. **`last`** - Uses only the last convolutional layer (default, similar to standard methods)
+2. **`last_5`** - Uses the last 5 convolutional layers for multi-scale feature extraction
+3. **`all`** - Uses all convolutional layers in the network for comprehensive analysis
+
+### Key Features
+
+- ✅ **Multi-layer Integration**: Combines information from multiple layers using cosine similarity weighting
+- ✅ **Proper AUC Evaluation**: Implements correct insertion/deletion AUC calculations in [0,1] range
+- ✅ **ROAD Metric Support**: Includes ROAD (RemOve And Debias) scores for robustness evaluation
+- ✅ **Optimized Performance**: Caching and batch processing for efficient evaluation
+- ✅ **Comprehensive Metrics**: Insertion AUC, Deletion AUC, and ROAD scores with statistical analysis
+
+## Usage Examples
+
+### Basic Enhanced CAM Evaluation
+
+```bash
+# Evaluate Enhanced CAM with last layer only
+python XAI_Enhancer_module/modular_xai_evaluation.py \
+    --model resnet18 \
+    --eval-type enhanced-only \
+    --layer-mode last \
+    --max-images 5
+
+# Compare Enhanced CAM (all layers) vs standard methods
+python XAI_Enhancer_module/modular_xai_evaluation.py \
+    --model resnet18 \
+    --eval-type comparison \
+    --layer-mode all \
+    --max-images 5 \
+    --methods GradCAM GradCAM++
+```
+
+### Layer Mode Comparison
+
+```bash
+# Compare all layer modes for Enhanced CAM
+python XAI_Enhancer_module/layer_mode_comparison.py \
+    --model resnet18 \
+    --layer-modes last last_5 all \
+    --max-images 5 \
+    --step-size 50
+```
+
+### Python API Usage
+
+```python
+from XAI_Enhancer_module.evaluator.enhanced_proper_auc_evaluator import EnhancedProperAUCEvaluator
+
+# Initialize evaluator with specific layer mode
+evaluator = EnhancedProperAUCEvaluator(
+    model_name="resnet18",
+    layer_mode="all"  # or "last_5", "last"
+)
+
+# Evaluate Enhanced CAM
+results = evaluator.evaluate_enhanced_cam(
+    max_images=10,
+    step_size=50
+)
+
+# Compare with standard methods
+comparison_df = evaluator.compare_enhanced_vs_standard(
+    standard_methods=["GradCAM", "GradCAM++"],
+    max_images=10
+)
+```
+
+## Evaluation Metrics
+
+### Insertion AUC
+- **Higher is better** (range: [0, 1])
+- Measures how adding important pixels improves model confidence
+- Perfect score: 1.0 (immediate confidence increase)
+
+### Deletion AUC
+- **Lower is better** (range: [0, 1])
+- Measures how removing important pixels hurts model confidence
+- Perfect score: 0.0 (immediate confidence drop)
+
+### ROAD Score
+- **Lower is better** (typically small positive values)
+- Measures robustness and faithfulness of explanations
+- Accounts for both pixel importance and spatial coherence
+
+## Supported Models
+
+- **ResNet variants**: resnet18, resnet34, resnet50
+- **EfficientNet**: b0, b4
+- **DenseNet**: densenet121
+- **Custom models**: Extensible framework for new architectures
+
+## Performance Analysis
+
+The Enhanced CAM with different layer modes shows:
+
+- **`last`**: Fast computation, similar to standard methods
+- **`last_5`**: Balanced performance with multi-scale features
+- **`all`**: Comprehensive analysis but higher computational cost
+
+Choose the layer mode based on your computational budget and desired explanation quality.
+
+----------
 # Choosing the layer(s) to extract activations from
 You need to choose the target layer to compute the CAM for.
 Some common choices are:

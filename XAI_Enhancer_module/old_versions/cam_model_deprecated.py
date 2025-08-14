@@ -13,13 +13,9 @@ from tqdm import tqdm
 
 from pytorch_grad_cam import GradCAM, HiResCAM, GradCAMPlusPlus, EigenCAM, EigenGradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
-from XAI_Enhancer_module.model_utils import get_device, transformations, CLASS_TO_IDX, IDX_TO_CLASS
+from XAI_Enhancer_module.utils.model_utils import get_device, transformations, CLASS_TO_IDX, IDX_TO_CLASS
 
-# Updated to use device preference
-def get_device_for_cam(device_preference="auto"):
-    return get_device(device_preference)
-
-device = get_device_for_cam()
+device = get_device()
 
 class CamDataset(Dataset):
     def __init__(self, cam, model_name, image_filepaths, labels, model, conv_list):
@@ -54,14 +50,13 @@ class CamDataset(Dataset):
         hook_1 = target_layer.register_forward_hook(hook)
 
         modified_output = model(input_tensor)
-        modified_output = modified_output[0].cpu().data.numpy()
         hook_1.remove()
 
         return modified_output
     
-    def forward_pass_actual(self, input):
+    def forward_pass_actual(self, input, target_class):
         actual_output = self.model(input)
-        actual_output = actual_output[0].cpu().data.numpy()
+        actual_output = actual_output[0].cpu().data.numpy()[target_class]
         return actual_output
     
     def transform_image(self, image):
@@ -73,53 +68,37 @@ class CamDataset(Dataset):
         input_tensor = torch.unsqueeze(image, dim = 0)
         return input_tensor
     
-    def cosine_similarity_(self, actual_output, modified_output):
-        """
-        Calculates the cosine similarity between actual_output and modified_output vectors.
-        Returns the similarity as a numpy array.
-        """
-        actual = torch.tensor(actual_output) if not isinstance(actual_output, torch.Tensor) else actual_output
-        modified = torch.tensor(modified_output) if not isinstance(modified_output, torch.Tensor) else modified_output
-        # Ensure both are 2D (batch, features)
-        if actual.ndim == 1:
-            actual = actual.unsqueeze(0)
-        if modified.ndim == 1:
-            modified = modified.unsqueeze(0)
-        cos = nn.functional.cosine_similarity(actual, modified, dim=1)
-        return cos.detach().cpu().numpy()
+    def euclidean_diff(self, actual_output, modified_output):
+        difference = torch.sqrt(torch.sum(torch.pow(torch.subtract(actual_output, modified_output), 2), dim=1)) 
+        return difference.detach().cpu().numpy()
 
     def __getitem__(self, idx):
-        '''
-        Implementation with softmax weighing scheme, 
-        after applying cosine_similarity_
-        '''
+
         image_filepath = self.image_filepaths[idx]
         image = plt.imread(image_filepath)
         label = self.labels[idx]
         pred_label = self.class_to_label(label)
         input_tensor = self.transform_image(image)
-        actual_output = self.forward_pass_actual(input_tensor)
-        image, cam_per_layer, modified_output_per_layer = self.modified_cam(image, pred_label, self.conv_list)
-        cos_values = []
-        for index, layer in enumerate(self.conv_list):
-            intermediate_output = modified_output_per_layer[index]
-            intermediate_map = torch.from_numpy(intermediate_output)
-            modified_output = self.hook_and_cook(layer, self.model, image, intermediate_map)
-            cos_val = self.cosine_similarity_(actual_output, modified_output)
-            cos_values.append(cos_val)
-
-        # Convert cos_values to a tensor and apply softmax
-        cos_values_tensor = torch.tensor(cos_values, dtype=torch.float32).squeeze()
-        softmax_weights = torch.softmax(cos_values_tensor, dim=0)
-
+        actual_output = self.forward_pass_actual(input_tensor, pred_label) #being calculated repetitively [try to sort this]
+        sum_of_all_values = 0
         weighted_final_cam_image = 0
-        for i, weight in enumerate(softmax_weights):
-            cam_image = torch.from_numpy(cam_per_layer[i][0, :])
-            weighted_final_cam_image += weight * cam_image
+        image, cam_per_layer, modified_output_per_layer = self.modified_cam(image, label, self.conv_list)
 
-            weighted_final_cam_image -= weighted_final_cam_image.min()
-            weighted_final_cam_image /= (1e-7 + weighted_final_cam_image.max())
-            image = torch.squeeze(image, dim = 0)
+        for index, layer in enumerate(self.conv_list):
+            # target_layer = [dict(*[self.model.named_modules()])[layer]]
+            # image, cam_image, intermediate_output = self.grad_cam(input_tensor, pred_label, target_layer)
+            intermediate_output = modified_output_per_layer[index]
+            cam_image = cam_per_layer[index][0, :] ### get the grayscaled cam using [0, :]
+            intermediate_map = torch.from_numpy(intermediate_output)
+            cam_image = torch.from_numpy(cam_image)
+            modified_output = self.hook_and_cook(layer, self.model, image, intermediate_map)
+            abs_diff = self.euclidean_diff(actual_output, modified_output)
+            sum_of_all_values += abs_diff
+            weighted_final_cam_image += cam_image * abs_diff
+
+        weighted_final_cam_image -= weighted_final_cam_image.min()
+        weighted_final_cam_image /= (1e-7 + weighted_final_cam_image.max())
+        image = torch.squeeze(image, dim = 0)
 
         return image, weighted_final_cam_image
         # return image, gray_image

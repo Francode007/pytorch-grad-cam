@@ -5,7 +5,7 @@ from tqdm import tqdm
 from scipy.ndimage.filters import gaussian_filter
 from matplotlib import pyplot as plt
 
-from XAI_Enhancer_module.metrics.utils_metric import *
+from XAI_Enhancer_module.old_versions.metrics.utils_metric import *
 from pytorch_grad_cam.metrics.road import ROADCombined
 
 n_classes = 2
@@ -50,7 +50,7 @@ class CausalMetric():
         self.device_preference = device_preference
         
         # Import get_device here to avoid circular imports
-        from XAI_Enhancer_module.model_utils import get_device
+        from XAI_Enhancer_module.utils.model_utils import get_device
         self.device = get_device(device_preference)
 
     def HW_calc(self, model_name):

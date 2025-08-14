@@ -10,7 +10,7 @@ from typing import List, Dict, Tuple
 import os
 from tqdm import tqdm
 
-from XAI_Enhancer_module.model_utils import get_val_dataloader, test_model, IDX_TO_CLASS, CLASS_TO_IDX
+from XAI_Enhancer_module.utils.model_utils import get_val_dataloader, test_model, IDX_TO_CLASS, CLASS_TO_IDX
 
 
 class OptimizedPredictor:
@@ -99,7 +99,7 @@ class OptimizedPredictor:
             List of predicted label indices
         """
         # Create a temporary dataset for these images
-        from XAI_Enhancer_module.model_utils import IBSValDataset
+        from XAI_Enhancer_module.utils.model_utils import IBSValDataset
         
         dataset = IBSValDataset(image_paths, self.model_name)
         dataloader = DataLoader(

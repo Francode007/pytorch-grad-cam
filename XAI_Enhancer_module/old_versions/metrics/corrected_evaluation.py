@@ -54,7 +54,7 @@ class CorrectedCausalMetric:
         self.substrate_fn = substrate_fn
         
         # Import get_device here to avoid circular imports
-        from XAI_Enhancer_module.model_utils import get_device
+        from XAI_Enhancer_module.utils.model_utils import get_device
         self.device = get_device(device_preference)
         
         # Calculate image dimensions
@@ -159,9 +159,9 @@ def test_corrected_evaluation():
     print("Testing corrected evaluation metrics...")
     
     # Load model and data
-    from XAI_Enhancer_module.model_utils import test_model, get_validation_paths, TRAIN_DATA_PATH
-    from XAI_Enhancer_module.optimized_predictor import get_optimized_predictions
-    from XAI_Enhancer_module.optimized_cam_extractor import OptimizedCamExtractor
+    from XAI_Enhancer_module.utils.model_utils import test_model, get_validation_paths, TRAIN_DATA_PATH
+    from XAI_Enhancer_module.utils.optimized_predictor import get_optimized_predictions
+    from XAI_Enhancer_module.utils.optimized_cam_extractor import OptimizedCamExtractor
     
     model_name = "resnet18"
     model = test_model(model_name, device_preference="mps")

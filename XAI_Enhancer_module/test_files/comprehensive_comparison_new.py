@@ -14,7 +14,7 @@ import pandas as pd
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
-from XAI_Enhancer_module.enhanced_proper_auc_evaluator import EnhancedProperAUCEvaluator
+from XAI_Enhancer_module.evaluator.enhanced_proper_auc_evaluator import EnhancedProperAUCEvaluator
 
 def run_comprehensive_comparison(model_name="resnet18", max_images=2, step_size=50):
     """Run comprehensive comparison using the ProperAUCEvaluator."""

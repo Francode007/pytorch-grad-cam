@@ -13,8 +13,8 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
-from XAI_Enhancer_module.enhanced_proper_auc_evaluator import EnhancedProperAUCEvaluator
-from XAI_Enhancer_module.model_utils import get_validation_paths, TRAIN_DATA_PATH
+from XAI_Enhancer_module.evaluator.enhanced_proper_auc_evaluator import EnhancedProperAUCEvaluator
+from XAI_Enhancer_module.utils.model_utils import get_validation_paths, TRAIN_DATA_PATH
 
 
 def setup_argument_parser():

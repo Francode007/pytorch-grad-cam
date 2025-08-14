@@ -13,8 +13,8 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
-from XAI_Enhancer_module.model_utils import get_device, transformations, CLASS_TO_IDX, IDX_TO_CLASS
-from XAI_Enhancer_module.GradCAM_enhanced import GradCAMEnhanced
+from XAI_Enhancer_module.utils.model_utils import get_device, transformations, CLASS_TO_IDX, IDX_TO_CLASS
+from XAI_Enhancer_module.enhanced_cams.GradCAM_enhanced import GradCAMEnhanced
 
 
 class OptimizedCamExtractor:

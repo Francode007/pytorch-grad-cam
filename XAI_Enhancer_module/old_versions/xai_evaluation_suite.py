@@ -15,11 +15,11 @@ import pandas as pd
 from pathlib import Path
 
 # Import optimized modules
-from XAI_Enhancer_module.optimized_cam_extractor import OptimizedCamExtractor, create_optimized_dataloader
-from XAI_Enhancer_module.optimized_predictor import get_optimized_predictions, PredictionManager
-from XAI_Enhancer_module.metrics.evaluation import get_metrics, CausalMetric
-from XAI_Enhancer_module.model_utils import test_model, get_val_dataloader, get_device
-from XAI_Enhancer_module.GradCAM_enhanced import GradCAMEnhanced
+from XAI_Enhancer_module.utils.optimized_cam_extractor import OptimizedCamExtractor, create_optimized_dataloader
+from XAI_Enhancer_module.utils.optimized_predictor import get_optimized_predictions, PredictionManager
+from XAI_Enhancer_module.old_versions.metrics.evaluation import get_metrics, CausalMetric
+from XAI_Enhancer_module.utils.model_utils import test_model, get_val_dataloader, get_device
+from XAI_Enhancer_module.enhanced_cams.GradCAM_enhanced import GradCAMEnhanced
 
 
 class XAIEvaluationSuite:

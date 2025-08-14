@@ -25,8 +25,8 @@ from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget, Classif
 from pytorch_grad_cam.metrics.road import ROADCombined
 
 # Local imports
-from XAI_Enhancer_module.model_utils import test_model, get_device, get_validation_paths, TRAIN_DATA_PATH, MEAN, STD
-from XAI_Enhancer_module.optimized_predictor import get_optimized_predictions
+from XAI_Enhancer_module.utils.model_utils import test_model, get_device, get_validation_paths, TRAIN_DATA_PATH, MEAN, STD
+from XAI_Enhancer_module.utils.optimized_predictor import get_optimized_predictions
 
 
 class ProperAUCEvaluator:
@@ -122,8 +122,8 @@ class ProperAUCEvaluator:
         image_tensor = image_tensor.to(self.device)
         
         # Debug tensor shapes
-        print(f"    Image tensor shape: {image_tensor.shape}")
-        print(f"    Saliency map shape: {saliency_map.shape}")
+        # print(f"    Image tensor shape: {image_tensor.shape}")
+        # print(f"    Saliency map shape: {saliency_map.shape}")
         
         # Create blurred baseline
         blurred_image = self._create_blurred_baseline(image_tensor)
@@ -268,7 +268,7 @@ class ProperAUCEvaluator:
             # ROAD expects saliency_map with shape (batch_size, H, W)
             saliency_tensor = np.expand_dims(saliency_map, axis=0)
             
-            print(f"    ROAD input shapes - Image: {image_tensor.shape}, Saliency: {saliency_tensor.shape}")
+            # print(f"    ROAD input shapes - Image: {image_tensor.shape}, Saliency: {saliency_tensor.shape}")
             
             targets = [ClassifierOutputSoftmaxTarget(target_class)]
             
@@ -282,7 +282,15 @@ class ProperAUCEvaluator:
                        max_images: int = 2) -> Dict[str, any]:
         """Evaluate a CAM method with proper AUC calculations."""
         # Get image paths and predictions
-        image_paths = get_validation_paths(TRAIN_DATA_PATH)[:max_images]
+        all_image_paths = get_validation_paths(TRAIN_DATA_PATH)
+        
+        # Handle special cases for max_images
+        if max_images == -1 or max_images is None:
+            # Use entire validation dataset
+            image_paths = all_image_paths
+        else:
+            # Use specified number of images
+            image_paths = all_image_paths[:max_images]
         predicted_labels, _, _ = get_optimized_predictions(
             self.model_name, image_paths, use_validation_set=False
         )

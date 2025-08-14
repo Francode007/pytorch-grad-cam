@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from pytorch_grad_cam import GradCAM, HiResCAM, GradCAMPlusPlus, EigenCAM, EigenGradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
-from XAI_Enhancer_module.model_utils import get_device, transformations, CLASS_TO_IDX, IDX_TO_CLASS
+from XAI_Enhancer_module.utils.model_utils import get_device, transformations, CLASS_TO_IDX, IDX_TO_CLASS
 
 device = get_device()
 
