@@ -24,6 +24,7 @@ from XAI_Enhancer_module.evaluator.proper_auc_evaluation import ProperAUCEvaluat
 from XAI_Enhancer_module.utils.optimized_cam_extractor import OptimizedCamExtractor
 from XAI_Enhancer_module.utils.optimized_predictor import get_optimized_predictions
 from XAI_Enhancer_module.utils.model_utils import get_validation_paths, TRAIN_DATA_PATH
+from XAI_Enhancer_module.utils.directory_manager import save_evaluation_results, save_analysis_data
 
 
 class EnhancedProperAUCEvaluator(ProperAUCEvaluator):
@@ -256,6 +257,46 @@ class EnhancedProperAUCEvaluator(ProperAUCEvaluator):
             'road_scores': road_scores
         }
         
+        # Save individual Enhanced CAM results to CSV
+        try:
+            # Create a simple DataFrame for individual results
+            individual_df = pd.DataFrame([{
+                'Method': results['cam_method'],
+                'Model': results['model_name'],
+                'Layer_Mode': results['layer_mode'],
+                'Num_Layers': results['num_layers'],
+                'Num_Images': results['num_images'],
+                'Step_Size': results['step_size'],
+                'Insertion_AUC_Mean': results['insertion_auc_mean'],
+                'Insertion_AUC_Std': results['insertion_auc_std'],
+                'Deletion_AUC_Mean': results['deletion_auc_mean'],
+                'Deletion_AUC_Std': results['deletion_auc_std'],
+                'ROAD_Mean': results['road_mean'],
+                'ROAD_Std': results['road_std']
+            }])
+            
+            saved_path = save_evaluation_results(
+                individual_df,
+                self.model_name,
+                evaluation_type=f"enhanced_cam_{self.layer_mode}",
+                add_timestamp=True
+            )
+            print(f"\n💾 Enhanced CAM results saved to: {saved_path}")
+        except Exception as e:
+            print(f"⚠️  Warning: Could not save Enhanced CAM results to CSV: {e}")
+        
+        # Save detailed results to pickle file
+        try:
+            pickle_path = save_analysis_data(
+                results,
+                self.model_name,
+                analysis_type=f"enhanced_cam_{self.layer_mode}_detailed",
+                add_timestamp=True
+            )
+            print(f"💾 Detailed Enhanced CAM data saved to: {pickle_path}")
+        except Exception as e:
+            print(f"⚠️  Warning: Could not save detailed results to pickle: {e}")
+        
         return results
     
     def compare_enhanced_vs_standard(self, standard_methods: List[str] = None, 
@@ -274,7 +315,7 @@ class EnhancedProperAUCEvaluator(ProperAUCEvaluator):
             DataFrame with comparison results
         """
         if standard_methods is None:
-            standard_methods = ["GradCAM", "GradCAM++"]
+            standard_methods = ["GradCAM", "GradCAM++", "EigenCAM", "HiResCAM", "LayerCAM", "ScoreCAM"]
         
         # Auto-determine verbosity if not specified
         if verbose is None:
@@ -333,7 +374,47 @@ class EnhancedProperAUCEvaluator(ProperAUCEvaluator):
             print(f"  Deletion AUC: {method_results['deletion_auc_mean']:.4f} ± {method_results['deletion_auc_std']:.4f}")
             print(f"  ROAD Score: {method_results['road_mean']:.4f} ± {method_results['road_std']:.4f}")
         
-        return pd.DataFrame(results)
+        # Create results DataFrame
+        comparison_df = pd.DataFrame(results)
+        
+        # Save results to model-specific CSV directory
+        try:
+            saved_path = save_evaluation_results(
+                comparison_df,
+                self.model_name,
+                evaluation_type="enhanced_vs_standard_comparison",
+                add_timestamp=True
+            )
+            print(f"\n💾 Results saved to: {saved_path}")
+        except Exception as e:
+            print(f"⚠️  Warning: Could not save results to CSV: {e}")
+        
+        # Save detailed comparison data to pickle file
+        try:
+            # Create a comprehensive data structure for the comparison
+            comparison_data = {
+                'comparison_df': comparison_df,
+                'model_name': self.model_name,
+                'layer_mode': self.layer_mode,
+                'num_layers': len(self.conv_layers),
+                'max_images': max_images,
+                'step_size': step_size,
+                'enhanced_results': enhanced_results,
+                'standard_results': {method: method_results for method, method_results in 
+                                   zip(standard_methods, [summary for summary in results if summary['Method'] != f'Enhanced CAM ({self.layer_mode})'])}
+            }
+            
+            pickle_path = save_analysis_data(
+                comparison_data,
+                self.model_name,
+                analysis_type="enhanced_vs_standard_comparison_detailed",
+                add_timestamp=True
+            )
+            print(f"💾 Detailed comparison data saved to: {pickle_path}")
+        except Exception as e:
+            print(f"⚠️  Warning: Could not save detailed comparison data to pickle: {e}")
+        
+        return comparison_df
 
 
 def main():
@@ -344,7 +425,9 @@ def main():
     parser.add_argument("--model", default="resnet18", help="Model name")
     parser.add_argument("--max-images", type=int, default=2, help="Maximum images to test")
     parser.add_argument("--step-size", type=int, default=224, help="Step size for evaluation")
-    parser.add_argument("--standard-methods", nargs="+", default=["GradCAM"], 
+    parser.add_argument("--standard-methods", nargs="+", 
+                       default=["GradCAM", "GradCAM++", "EigenCAM", "HiResCAM", "LayerCAM", "ScoreCAM"], 
+                       choices=["GradCAM", "GradCAM++", "EigenGradCAM", "EigenCAM", "HiResCAM", "LayerCAM", "ScoreCAM"],
                        help="Standard CAM methods to compare")
     parser.add_argument("--layer-mode", default="last", 
                        choices=["all", "last_5", "last"],

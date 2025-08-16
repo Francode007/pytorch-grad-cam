@@ -16,6 +16,7 @@ sys.path.append(str(project_root))
 
 from XAI_Enhancer_module.evaluator.enhanced_proper_auc_evaluator import EnhancedProperAUCEvaluator
 from XAI_Enhancer_module.evaluator.proper_auc_evaluation import ProperAUCEvaluator
+from XAI_Enhancer_module.utils.directory_manager import save_evaluation_results, print_directory_structure
 
 class ModularXAIEvaluationSuite:
     """
@@ -78,7 +79,7 @@ class ModularXAIEvaluationSuite:
     def evaluate_standard_methods(self, methods: List[str] = None, max_images: int = 2) -> Dict:
         """Evaluate standard CAM methods."""
         if methods is None:
-            methods = ["GradCAM", "GradCAM++"]
+            methods = ["GradCAM", "GradCAM++", "EigenCAM", "HiResCAM", "LayerCAM", "ScoreCAM"]
         
         results = {}
         
@@ -117,7 +118,7 @@ class ModularXAIEvaluationSuite:
         print(f"{'='*80}")
         
         if standard_methods is None:
-            standard_methods = ["GradCAM", "GradCAM++"]
+            standard_methods = ["GradCAM", "GradCAM++", "EigenCAM", "HiResCAM", "LayerCAM", "ScoreCAM"]
         
         # Auto-determine verbosity if not specified
         if verbose is None:
@@ -160,17 +161,22 @@ Examples:
   # Evaluate Enhanced CAM only with last layer (auto verbosity)
   python modular_xai_evaluation.py --model resnet18 --eval-type enhanced-only --max-images 2 --layer-mode last
 
-  # Large scale comparison with quiet mode
+  # Large scale comparison with quiet mode (all standard methods)
   python modular_xai_evaluation.py --model resnet18 --eval-type comparison --max-images 100 --layer-mode all --quiet
 
-  # Compare Enhanced CAM (all layers) vs standard methods with verbose output
-  python modular_xai_evaluation.py --model resnet18 --eval-type comparison --max-images 5 --layer-mode all --verbose
+  # Compare Enhanced CAM vs specific standard methods
+  python modular_xai_evaluation.py --model resnet18 --eval-type comparison --max-images 5 --methods GradCAM EigenCAM HiResCAM
 
-  # Evaluate Enhanced CAM with last 5 layers
-  python modular_xai_evaluation.py --model resnet18 --eval-type enhanced-only --layer-mode last_5
+  # Evaluate all standard CAM methods and save to custom directories
+  python modular_xai_evaluation.py --model resnet18 --eval-type standard-only --methods GradCAM GradCAM++ EigenCAM HiResCAM LayerCAM ScoreCAM --output-csv-dir ./custom_csv --output-analysis-dir ./custom_analysis
 
-  # Evaluate standard methods only
-  python modular_xai_evaluation.py --model resnet18 --eval-type standard-only --methods GradCAM GradCAM++
+  # Quick test with new methods (results saved to ./csv_exports/resnet18/ and ./analysis_results/resnet18/)
+  python modular_xai_evaluation.py --model resnet18 --eval-type comparison --max-images 2 --methods LayerCAM ScoreCAM
+
+  # Evaluate Enhanced CAM with last 5 layers vs LayerCAM and ScoreCAM
+  python modular_xai_evaluation.py --model resnet18 --eval-type comparison --layer-mode last_5 --methods LayerCAM ScoreCAM
+  
+  # All outputs are automatically organized by model name into subdirectories
         """
     )
     
@@ -188,8 +194,9 @@ Examples:
     parser.add_argument('--step-size', type=int, default=224,
                        help='Step size for insertion/deletion evaluation')
     
-    parser.add_argument('--methods', nargs='+', default=['GradCAM', 'GradCAM++'],
-                       choices=['GradCAM', 'GradCAM++', 'EigenGradCAM'],
+    parser.add_argument('--methods', nargs='+', 
+                       default=['GradCAM', 'GradCAM++', 'EigenCAM', 'HiResCAM', 'LayerCAM', 'ScoreCAM'],
+                       choices=['GradCAM', 'GradCAM++', 'EigenGradCAM', 'EigenCAM', 'HiResCAM', 'LayerCAM', 'ScoreCAM'],
                        help='Standard CAM methods to evaluate')
     
     parser.add_argument('--device', default='auto',
@@ -205,6 +212,12 @@ Examples:
     
     parser.add_argument('--quiet', action='store_true',
                        help='Force quiet output (minimal logging)')
+    
+    parser.add_argument('--output-analysis-dir', default='./analysis_results',
+                       help='Base directory for analysis results (model subdirs will be created)')
+    
+    parser.add_argument('--output-csv-dir', default='./csv_exports',
+                       help='Base directory for CSV exports (model subdirs will be created)')
     
     args = parser.parse_args()
     
@@ -265,6 +278,15 @@ Examples:
             print(comparison_df.to_string(index=False))
         
         print(f"\n✅ Evaluation completed successfully!")
+        
+        # Show output directory structure
+        print(f"\n📁 OUTPUT SUMMARY:")
+        print(f"{'='*50}")
+        print(f"Results have been automatically saved to model-specific directories:")
+        print(f"• Analysis results: {args.output_analysis_dir}/{args.model}/")
+        print(f"• CSV exports: {args.output_csv_dir}/{args.model}/")
+        print(f"\nFor detailed directory structure:")
+        print_directory_structure(args.output_analysis_dir, args.output_csv_dir)
         
     except Exception as e:
         print(f"❌ Error during evaluation: {e}")

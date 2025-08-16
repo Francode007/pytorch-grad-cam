@@ -11,6 +11,13 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import argparse
 from typing import Dict, Any
+import sys
+
+# Add project root to path
+project_root = Path(__file__).parent.parent
+sys.path.append(str(project_root))
+
+from XAI_Enhancer_module.utils.directory_manager import create_model_output_dirs
 
 
 def load_analysis_results(pkl_path: str) -> Dict[str, Any]:
@@ -184,13 +191,26 @@ def analyze_layer_weights(results: Dict[str, Any]):
 def export_to_csv(results: Dict[str, Any], output_path: str):
     """
     Export key results to CSV files for further analysis.
+    Uses model-specific subdirectories for organization.
     
     Args:
         results: The loaded results dictionary
-        output_path: Directory to save CSV files
+        output_path: Base directory to save CSV files
     """
-    output_dir = Path(output_path)
-    output_dir.mkdir(exist_ok=True)
+    # Extract model name from results, with fallback
+    model_name = "unknown_model"
+    if 'evaluation_metrics' in results and results['evaluation_metrics']:
+        model_name = results['evaluation_metrics'].get('model_name', model_name)
+    elif 'model_name' in results:
+        model_name = results['model_name']
+    
+    # Create model-specific CSV directory
+    _, model_csv_dir = create_model_output_dirs(
+        model_name, 
+        base_csv_dir=output_path
+    )
+    
+    print(f"📁 Exporting CSV files to model-specific directory: {model_csv_dir}")
     
     try:
         # Export layer information
@@ -199,7 +219,7 @@ def export_to_csv(results: Dict[str, Any], output_path: str):
             # Remove the 'module' column as it contains PyTorch objects
             if 'module' in layer_df.columns:
                 layer_df = layer_df.drop('module', axis=1)
-            layer_csv_path = output_dir / "layer_information.csv"
+            layer_csv_path = model_csv_dir / "layer_information.csv"
             layer_df.to_csv(layer_csv_path, index=False)
             print(f"✅ Layer information exported to: {layer_csv_path}")
         
@@ -209,7 +229,7 @@ def export_to_csv(results: Dict[str, Any], output_path: str):
                 'Layer_Index': range(len(results['average_weights'])),
                 'Average_Weight': results['average_weights']
             })
-            weights_csv_path = output_dir / "layer_weights.csv"
+            weights_csv_path = model_csv_dir / "layer_weights.csv"
             weights_df.to_csv(weights_csv_path, index=False)
             print(f"✅ Layer weights exported to: {weights_csv_path}")
         
@@ -230,7 +250,7 @@ def export_to_csv(results: Dict[str, Any], output_path: str):
                 'road_mean': metrics.get('road_mean'),
                 'road_std': metrics.get('road_std')
             }])
-            metrics_csv_path = output_dir / "evaluation_metrics.csv"
+            metrics_csv_path = model_csv_dir / "evaluation_metrics.csv"
             metrics_df.to_csv(metrics_csv_path, index=False)
             print(f"✅ Evaluation metrics exported to: {metrics_csv_path}")
             

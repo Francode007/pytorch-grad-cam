@@ -20,7 +20,10 @@ sys.path.append(str(project_root))
 
 # Standard CAM imports
 sys.path.append(str(project_root))  # Add pytorch-grad-cam root
-from pytorch_grad_cam import GradCAM, GradCAMPlusPlus, EigenGradCAM
+from pytorch_grad_cam import (
+    GradCAM, GradCAMPlusPlus, EigenGradCAM, EigenCAM, 
+    HiResCAM, LayerCAM, ScoreCAM
+)
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget, ClassifierOutputSoftmaxTarget
 from pytorch_grad_cam.metrics.road import ROADCombined
 
@@ -90,6 +93,10 @@ class ProperAUCEvaluator:
             "GradCAM": GradCAM,
             "GradCAM++": GradCAMPlusPlus,
             "EigenGradCAM": EigenGradCAM,
+            "EigenCAM": EigenCAM,
+            "HiResCAM": HiResCAM,
+            "LayerCAM": LayerCAM,
+            "ScoreCAM": ScoreCAM,
         }
         
         if cam_method_name not in cam_methods:
@@ -397,7 +404,9 @@ def main():
     parser = argparse.ArgumentParser(description="Proper AUC Evaluation")
     parser.add_argument("--model", default="resnet18", help="Model name")
     parser.add_argument("--max-images", type=int, default=2, help="Maximum images to test")
-    parser.add_argument("--methods", nargs="+", default=["GradCAM", "GradCAM++"], 
+    parser.add_argument("--methods", nargs="+", 
+                       default=["GradCAM", "GradCAM++", "EigenCAM", "HiResCAM", "LayerCAM", "ScoreCAM"],
+                       choices=["GradCAM", "GradCAM++", "EigenGradCAM", "EigenCAM", "HiResCAM", "LayerCAM", "ScoreCAM"],
                        help="CAM methods to test")
     
     args = parser.parse_args()

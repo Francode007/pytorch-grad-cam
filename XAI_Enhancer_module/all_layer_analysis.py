@@ -24,6 +24,7 @@ from XAI_Enhancer_module.evaluator.enhanced_proper_auc_evaluator import Enhanced
 from XAI_Enhancer_module.utils.model_utils import test_model, get_validation_paths, TRAIN_DATA_PATH
 from XAI_Enhancer_module.utils.optimized_predictor import get_optimized_predictions
 from XAI_Enhancer_module.enhanced_cams.GradCAM_enhanced import GradCAMEnhanced
+from XAI_Enhancer_module.utils.directory_manager import create_model_output_dirs, save_analysis_data, save_visualization
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 import cv2
 
@@ -192,8 +193,7 @@ class AllLayerAnalyzer:
         Returns:
             Comprehensive evaluation results
         """
-        print(f"
-{'='*80}")
+        print(f"{'='*80}")
         print(f"ENHANCED CAM ALL-LAYER EVALUATION")
         print(f"{'='*80}")
         print(f"Model: {self.model_name}")
@@ -278,17 +278,19 @@ class AllLayerAnalyzer:
         
         return comprehensive_results
     
-    def create_layer_visualization(self, results: Dict, save_path: Optional[str] = None):
+    def create_layer_visualization(self, results: Dict, save_path: Optional[str] = None, 
+                                 save_individual_plots: bool = True):
         """
         Create comprehensive visualizations of layer analysis.
+        Saves both individual plots and a combined figure in model-specific directories.
         
         Args:
             results: Results from evaluate_all_layers
-            save_path: Optional path to save plots
+            save_path: Optional path to save the combined plot (if None, uses model-specific directory)
+            save_individual_plots: Whether to save individual plots
         """
         # Set up the plotting style
         plt.style.use('default')  # Use default style instead of seaborn
-        fig = plt.figure(figsize=(20, 15))
         
         # Extract data
         layer_info = results['layer_info']
@@ -299,11 +301,106 @@ class AllLayerAnalyzer:
             print("No weight data available for visualization")
             return
         
-        # 1. Average Layer Weights Bar Plot
-        plt.subplot(3, 2, 1)
+        # Create model-specific directories for saving plots
+        if save_path is None or save_individual_plots:
+            from XAI_Enhancer_module.utils.directory_manager import create_model_output_dirs
+            model_analysis_dir, _ = create_model_output_dirs(self.model_name)
+            
+            if save_path is None:
+                save_path = model_analysis_dir / "all_layers_combined_analysis.png"
+        
+        # Prepare common data
         layer_names = [f"L{i}: {info['name'].split('.')[-1]}" for i, info in enumerate(layer_info)]
         layer_indices = range(len(average_weights))
         
+        # Create individual plots if requested
+        individual_plots = []
+        
+        # 1. Average Layer Weights Bar Plot
+        fig1, ax1 = plt.subplots(figsize=(12, 8))
+        bars = ax1.bar(layer_indices, average_weights, alpha=0.7, color='skyblue', edgecolor='navy')
+        ax1.set_title('Average Layer Weights (All Images)', fontsize=16, fontweight='bold')
+        ax1.set_xlabel('Layer Index', fontsize=14)
+        ax1.set_ylabel('Average Weight', fontsize=14)
+        ax1.set_xticks(layer_indices[::max(1, len(layer_indices)//10)])
+        ax1.set_xticklabels([layer_names[i] for i in layer_indices[::max(1, len(layer_indices)//10)]], 
+                           rotation=45, ha='right')
+        ax1.grid(True, alpha=0.3)
+        
+        # Highlight top 3 layers
+        top_3_indices = np.argsort(average_weights)[-3:]
+        for idx in top_3_indices:
+            bars[idx].set_color('orange')
+        
+        plt.tight_layout()
+        if save_individual_plots:
+            individual_path = model_analysis_dir / "plot1_average_layer_weights.png"
+            plt.savefig(individual_path, dpi=300, bbox_inches='tight')
+            individual_plots.append(individual_path)
+        plt.close()
+        
+        # 2. Layer Weight Distribution Heatmap
+        fig2, ax2 = plt.subplots(figsize=(12, 8))
+        if len(layer_weights_all) > 1:
+            weights_matrix = np.array(layer_weights_all).T
+            im = ax2.imshow(weights_matrix, cmap='viridis', aspect='auto')
+            cbar = plt.colorbar(im, ax=ax2)
+            cbar.set_label('Weight Value', fontsize=12)
+            ax2.set_yticks(range(len(layer_info)))
+            ax2.set_yticklabels([f"L{i}" for i in range(len(layer_info))])
+            ax2.set_xticks(range(len(layer_weights_all)))
+            ax2.set_xticklabels([f"Img{i+1}" for i in range(len(layer_weights_all))])
+            ax2.set_title('Layer Weights Across Images', fontsize=16, fontweight='bold')
+            ax2.set_ylabel('Layer Index', fontsize=14)
+            ax2.set_xlabel('Image Index', fontsize=14)
+        
+        plt.tight_layout()
+        if save_individual_plots:
+            individual_path = model_analysis_dir / "plot2_layer_weights_heatmap.png"
+            plt.savefig(individual_path, dpi=300, bbox_inches='tight')
+            individual_plots.append(individual_path)
+        plt.close()
+        
+        # 3. Layer Architecture Information
+        fig3, ax3 = plt.subplots(figsize=(12, 8))
+        out_channels = [info['out_channels'] for info in layer_info]
+        ax3.plot(layer_indices, out_channels, marker='o', linewidth=2, markersize=6, color='navy')
+        ax3.set_title('Output Channels per Layer', fontsize=16, fontweight='bold')
+        ax3.set_xlabel('Layer Index', fontsize=14)
+        ax3.set_ylabel('Output Channels', fontsize=14)
+        ax3.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        if save_individual_plots:
+            individual_path = model_analysis_dir / "plot3_layer_architecture.png"
+            plt.savefig(individual_path, dpi=300, bbox_inches='tight')
+            individual_plots.append(individual_path)
+        plt.close()
+        
+        # 4. Weight Variance Analysis
+        fig4, ax4 = plt.subplots(figsize=(12, 8))
+        if len(layer_weights_all) > 1:
+            weight_std = np.std(layer_weights_all, axis=0)
+            bars = ax4.bar(layer_indices, weight_std, alpha=0.7, color='lightcoral')
+            ax4.set_title('Layer Weight Variance Across Images', fontsize=16, fontweight='bold')
+            ax4.set_xlabel('Layer Index', fontsize=14)
+            ax4.set_ylabel('Weight Standard Deviation', fontsize=14)
+            ax4.set_xticks(layer_indices[::max(1, len(layer_indices)//10)])
+            ax4.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        if save_individual_plots:
+            individual_path = model_analysis_dir / "plot4_weight_variance.png"
+            plt.savefig(individual_path, dpi=300, bbox_inches='tight')
+            individual_plots.append(individual_path)
+        plt.close()
+        
+        # Now create the combined figure with all 6 subplots
+        fig_combined = plt.figure(figsize=(20, 15))
+        
+        # Recreate all subplots in the combined figure
+        # 1. Average Layer Weights Bar Plot
+        plt.subplot(3, 2, 1)
         bars = plt.bar(layer_indices, average_weights, alpha=0.7, color='skyblue', edgecolor='navy')
         plt.title('Average Layer Weights (All Images)', fontsize=14, fontweight='bold')
         plt.xlabel('Layer Index')
@@ -314,7 +411,6 @@ class AllLayerAnalyzer:
         plt.grid(True, alpha=0.3)
         
         # Highlight top 3 layers
-        top_3_indices = np.argsort(average_weights)[-3:]
         for idx in top_3_indices:
             bars[idx].set_color('orange')
         
@@ -322,7 +418,6 @@ class AllLayerAnalyzer:
         plt.subplot(3, 2, 2)
         if len(layer_weights_all) > 1:
             weights_matrix = np.array(layer_weights_all).T
-            # Create a simple heatmap without seaborn
             im = plt.imshow(weights_matrix, cmap='viridis', aspect='auto')
             plt.colorbar(im)
             plt.yticks(range(len(layer_info)), [f"L{i}" for i in range(len(layer_info))])
@@ -394,11 +489,20 @@ class AllLayerAnalyzer:
         
         plt.tight_layout()
         
+        # Save the combined figure
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Visualization saved to: {save_path}")
+            print(f"📊 Combined visualization saved to: {save_path}")
+        
+        # Print summary of saved plots
+        if save_individual_plots:
+            print(f"📈 Individual plots saved:")
+            for i, path in enumerate(individual_plots, 1):
+                print(f"   Plot {i}: {path}")
         
         plt.show()
+        
+        return fig_combined, individual_plots if save_individual_plots else []
     
     def print_layer_summary(self, results: Dict):
         """Print a detailed summary of the layer analysis."""
@@ -455,14 +559,23 @@ Examples:
   # Analyze ResNet18 with all layers (auto verbosity)
   python all_layer_analysis.py --model resnet18 --max-images 5
 
-  # Large scale analysis with quiet mode
+  # Large scale analysis with quiet mode and save all plots
   python all_layer_analysis.py --model resnet18 --max-images 100 --quiet --save-plots
 
-  # Small scale with verbose output
-  python all_layer_analysis.py --model b0 --max-images 3 --verbose --save-plots
+  # Save both combined and individual plots to model-specific directories
+  python all_layer_analysis.py --model b0 --max-images 3 --save-plots --save-individual
 
-  # Quick analysis with fewer images
-  python all_layer_analysis.py --model resnet34 --max-images 2 --no-plots
+  # Quick analysis with only individual plots saved
+  python all_layer_analysis.py --model resnet34 --max-images 2 --save-individual --no-plots
+
+  # Full analysis with all outputs saved in organized directories
+  python all_layer_analysis.py --model resnet18 --max-images 10 --save-plots --save-individual --verbose
+
+Note: All outputs are automatically saved to model-specific directories:
+  • Analysis results: ./analysis_results/{model_name}/
+  • Combined plots: ./analysis_results/{model_name}/all_layers_combined_analysis.png
+  • Individual plots: ./analysis_results/{model_name}/plot1_average_layer_weights.png, etc.
+  • Pickle data: ./analysis_results/{model_name}/all_layers_analysis_*.pkl
         """
     )
     
@@ -479,6 +592,9 @@ Examples:
     
     parser.add_argument('--save-plots', action='store_true',
                        help='Save visualization plots to files')
+    
+    parser.add_argument('--save-individual', action='store_true',
+                       help='Save individual plots separately (in addition to combined plot)')
     
     parser.add_argument('--no-plots', action='store_true',
                        help='Skip visualization plots')
@@ -538,22 +654,26 @@ Examples:
         if not args.no_plots:
             save_path = None
             if args.save_plots:
-                output_dir = Path(args.output_dir)
-                output_dir.mkdir(exist_ok=True)
-                save_path = output_dir / f"{args.model}_all_layers_analysis.png"
+                # Create model-specific directories
+                model_analysis_dir, _ = create_model_output_dirs(args.model, args.output_dir)
+                save_path = model_analysis_dir / "all_layers_combined_analysis.png"
             
-            analyzer.create_layer_visualization(results, save_path)
-        
-        # Save detailed results
+            # Create visualizations with individual plots saved automatically when save_plots is True
+            combined_fig, individual_plots = analyzer.create_layer_visualization(
+                results, 
+                save_path, 
+                save_individual_plots=args.save_plots or args.save_individual
+            )        # Save detailed results
         if args.save_plots:
-            import pickle
-            output_dir = Path(args.output_dir)
-            output_dir.mkdir(exist_ok=True)
-            results_path = output_dir / f"{args.model}_analysis_results.pkl"
-            
-            with open(results_path, 'wb') as f:
-                pickle.dump(results, f)
-            print(f"Detailed results saved to: {results_path}")
+            # Use the directory manager to save results with model-specific organization
+            saved_path = save_analysis_data(
+                results, 
+                args.model, 
+                analysis_type="all_layers",
+                base_analysis_dir=args.output_dir,
+                add_timestamp=True
+            )
+            print(f"Detailed results saved to: {saved_path}")
         
         print(f"\n✅ All-layer analysis completed successfully!")
         
