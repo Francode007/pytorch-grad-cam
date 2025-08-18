@@ -76,12 +76,15 @@ class ModularXAIEvaluationSuite:
         self._print_results("Enhanced CAM", results)
         return results
     
-    def evaluate_standard_methods(self, methods: List[str] = None, max_images: int = 2) -> Dict:
-        """Evaluate standard CAM methods."""
+    def evaluate_standard_methods(self, methods: List[str] = None, max_images: int = 2,
+                                base_csv_dir: str = "./csv_exports",
+                                base_analysis_dir: str = "./analysis_results") -> Dict:
+        """Evaluate standard CAM methods and save results."""
         if methods is None:
             methods = ["GradCAM", "GradCAM++", "EigenCAM", "HiResCAM", "LayerCAM", "ScoreCAM"]
         
         results = {}
+        all_results_for_export = []
         
         for method in methods:
             print(f"\n{'='*60}")
@@ -95,6 +98,54 @@ class ModularXAIEvaluationSuite:
             
             results[method] = method_results
             self._print_results(method, method_results)
+            
+            # Prepare data for CSV export
+            export_row = {
+                'Method': method,
+                'Model': self.model_name,
+                'Insertion_AUC_Mean': method_results['insertion_auc_mean'],
+                'Insertion_AUC_Std': method_results['insertion_auc_std'],
+                'Deletion_AUC_Mean': method_results['deletion_auc_mean'],
+                'Deletion_AUC_Std': method_results['deletion_auc_std'],
+                'ROAD_Mean': method_results['road_mean'],
+                'ROAD_Std': method_results['road_std'],
+                'Images_Evaluated': method_results['num_images']
+            }
+            all_results_for_export.append(export_row)
+        
+        # Save results to CSV and pickle files
+        if all_results_for_export:
+            from XAI_Enhancer_module.utils.directory_manager import save_evaluation_results, save_analysis_data
+            
+            # Create DataFrame for CSV export
+            results_df = pd.DataFrame(all_results_for_export)
+            
+            # Save CSV results
+            csv_path = save_evaluation_results(
+                results_df, 
+                self.model_name, 
+                evaluation_type="standard_methods",
+                base_csv_dir=base_csv_dir
+            )
+            print(f"\n💾 Standard methods results saved to: {csv_path}")
+            
+            # Save detailed analysis data (pickle)
+            analysis_data = {
+                'model_name': self.model_name,
+                'evaluation_type': 'standard_methods',
+                'methods_evaluated': methods,
+                'detailed_results': results,
+                'summary_df': results_df,
+                'max_images': max_images
+            }
+            
+            pickle_path = save_analysis_data(
+                analysis_data,
+                self.model_name,
+                analysis_type="standard_methods_detailed",
+                base_analysis_dir=base_analysis_dir
+            )
+            print(f"💾 Detailed analysis data saved to: {pickle_path}")
         
         return results
     
@@ -261,7 +312,12 @@ Examples:
             
         elif args.eval_type == 'standard-only':
             # Evaluate standard methods only
-            standard_results = suite.evaluate_standard_methods(args.methods, args.max_images)
+            standard_results = suite.evaluate_standard_methods(
+                methods=args.methods, 
+                max_images=args.max_images,
+                base_csv_dir=args.output_csv_dir,
+                base_analysis_dir=args.output_analysis_dir
+            )
             
         elif args.eval_type == 'comparison':
             # Full comparison
