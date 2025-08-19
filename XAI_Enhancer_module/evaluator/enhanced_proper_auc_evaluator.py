@@ -34,17 +34,26 @@ class EnhancedProperAUCEvaluator(ProperAUCEvaluator):
     Supports different layer selection modes for Enhanced CAM.
     """
     
-    def __init__(self, model_name: str = "resnet18", device_preference: str = "auto", 
-                 layer_mode: str = "last"):
+    def __init__(self, 
+                 model, 
+                 model_name: str, 
+                 dataset_path: str, 
+                 layer_mode: str = "last",
+                 enhanced_cam_method: str = "GradCAMEnhanced"):
         """
         Initialize the Enhanced CAM evaluator.
         
         Args:
-            model_name: Name of the model
-            device_preference: Device preference ("auto", "cuda", "mps", "cpu")
-            layer_mode: Layer selection mode ("all", "last_5", "last")
+            model: Trained model for evaluation
+            model_name: Name of the model (resnet18, resnet34, etc.)
+            dataset_path: Path to ImageNet validation dataset
+            layer_mode: Layer selection mode ("last", "last_5", "all")
+            enhanced_cam_method: Enhanced CAM method to use
         """
-        super().__init__(model_name, device_preference)
+        super().__init__(model_name, device_preference="auto")
+        
+        # Store enhanced CAM method
+        self.enhanced_cam_method = enhanced_cam_method
         
         # Validate layer mode
         valid_modes = ["all", "last_5", "last"]
@@ -58,6 +67,7 @@ class EnhancedProperAUCEvaluator(ProperAUCEvaluator):
         self.enhanced_cam_extractor = None
         
         print(f"EnhancedProperAUCEvaluator initialized with Enhanced CAM support")
+        print(f"  Enhanced CAM method: {enhanced_cam_method}")
         print(f"  Layer mode: {layer_mode}")
         print(f"  Number of layers: {len(self.conv_layers)}")
     
@@ -122,8 +132,10 @@ class EnhancedProperAUCEvaluator(ProperAUCEvaluator):
         """Extract Enhanced CAM for a single image."""
         if self.enhanced_cam_extractor is None:
             self.enhanced_cam_extractor = OptimizedCamExtractor(
-                self.model, self.model_name, self.conv_layers, 
-                device_preference=str(self.device)
+                self.model, 
+                self.model_name, 
+                self.conv_layers,
+                cam_method=self.enhanced_cam_method
             )
         
         # Extract Enhanced CAM
@@ -240,7 +252,7 @@ class EnhancedProperAUCEvaluator(ProperAUCEvaluator):
         
         # Compile results
         results = {
-            'cam_method': f'Enhanced CAM ({self.layer_mode})',
+            'cam_method': f'{self.enhanced_cam_method} ({self.layer_mode})',
             'model_name': self.model_name,
             'layer_mode': self.layer_mode,
             'num_layers': len(self.conv_layers),
@@ -432,18 +444,23 @@ def main():
     parser.add_argument("--layer-mode", default="last", 
                        choices=["all", "last_5", "last"],
                        help="Layer selection mode for Enhanced CAM")
+    parser.add_argument("--enhanced-cam-method", default="GradCAMEnhanced",
+                       choices=["GradCAMEnhanced", "GradCAMPlusPlusEnhanced", "HiResCAMEnhanced", 
+                               "ScoreCAMEnhanced", "AblationCAMEnhanced"],
+                       help="Enhanced CAM method to use")
     
     args = parser.parse_args()
     
     print(f"\n{'='*80}")
     print(f"Enhanced Proper AUC Evaluation Test")
     print(f"Model: {args.model}, Max Images: {args.max_images}, Step Size: {args.step_size}")
-    print(f"Layer Mode: {args.layer_mode}")
+    print(f"Layer Mode: {args.layer_mode}, Enhanced CAM Method: {args.enhanced_cam_method}")
     print(f"{'='*80}")
     
     evaluator = EnhancedProperAUCEvaluator(
         model_name=args.model, 
-        layer_mode=args.layer_mode
+        layer_mode=args.layer_mode,
+        enhanced_cam_method=args.enhanced_cam_method
     )
     
     # Compare Enhanced CAM vs Standard methods

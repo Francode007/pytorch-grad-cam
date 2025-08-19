@@ -14,16 +14,23 @@ from tqdm import tqdm
 
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from XAI_Enhancer_module.utils.model_utils import get_device, transformations, CLASS_TO_IDX, IDX_TO_CLASS
-from XAI_Enhancer_module.enhanced_cams.GradCAM_enhanced import GradCAMEnhanced
+from XAI_Enhancer_module.enhanced_cams import (
+    GradCAMEnhanced, 
+    GradCAMPlusPlusEnhanced, 
+    HiResCAMEnhanced, 
+    ScoreCAMEnhanced, 
+    AblationCAMEnhanced
+)
 
 
 class OptimizedCamExtractor:
     """
-    Optimized extractor for saliency maps using enhanced GradCAM method.
+    Optimized extractor for saliency maps using enhanced CAM methods.
     Reduces redundant computations and improves efficiency.
     """
     
-    def __init__(self, model, model_name: str, conv_layers: List[nn.Module], device_preference: str = "auto"):
+    def __init__(self, model, model_name: str, conv_layers: List[nn.Module], 
+                 cam_method: str = "GradCAMEnhanced", device_preference: str = "auto"):
         """
         Initialize the CAM extractor.
         
@@ -31,6 +38,8 @@ class OptimizedCamExtractor:
             model: The trained neural network model
             model_name: Name of the model (affects image size)
             conv_layers: List of convolutional layers for CAM computation
+            cam_method: Enhanced CAM method to use ("GradCAMEnhanced", "GradCAMPlusPlusEnhanced", 
+                       "HiResCAMEnhanced", "ScoreCAMEnhanced", "AblationCAMEnhanced")
             device_preference: Device preference ("auto", "cuda", "mps", "cpu")
         """
         self.model = model
@@ -38,9 +47,22 @@ class OptimizedCamExtractor:
         self.conv_layers = conv_layers
         self.device = get_device(device_preference)
         self.img_size = 384 if model_name.startswith("b4") else 224
+        self.cam_method_name = cam_method
         
-        # Initialize enhanced GradCAM
-        self.cam_method = GradCAMEnhanced(model, conv_layers)
+        # Initialize the specified enhanced CAM method
+        enhanced_cam_methods = {
+            'GradCAMEnhanced': GradCAMEnhanced,
+            'GradCAMPlusPlusEnhanced': GradCAMPlusPlusEnhanced,
+            'HiResCAMEnhanced': HiResCAMEnhanced,
+            'ScoreCAMEnhanced': ScoreCAMEnhanced,
+            'AblationCAMEnhanced': AblationCAMEnhanced
+        }
+        
+        if cam_method not in enhanced_cam_methods:
+            raise ValueError(f"Unknown enhanced CAM method: {cam_method}. "
+                           f"Available methods: {list(enhanced_cam_methods.keys())}")
+        
+        self.cam_method = enhanced_cam_methods[cam_method](model, conv_layers)
         
         # Pre-compute transformations
         self.transforms = transformations

@@ -24,7 +24,7 @@ class ModularXAIEvaluationSuite:
     """
     
     def __init__(self, model_name: str, device_preference: str = "auto", 
-                 layer_mode: str = "last"):
+                 layer_mode: str = "last", enhanced_cam_method: str = "GradCAMEnhanced"):
         """
         Initialize the evaluation suite.
         
@@ -32,18 +32,22 @@ class ModularXAIEvaluationSuite:
             model_name: Name of the model
             device_preference: Device preference ("auto", "cuda", "mps", "cpu")
             layer_mode: Layer selection mode for Enhanced CAM
+            enhanced_cam_method: Enhanced CAM method to use
         """
         self.model_name = model_name
         self.device_preference = device_preference
         self.layer_mode = layer_mode
+        self.enhanced_cam_method = enhanced_cam_method
         self.enhanced_evaluator = EnhancedProperAUCEvaluator(
-            model_name, device_preference, layer_mode
+            model_name, dataset_path="", layer_mode=layer_mode, 
+            enhanced_cam_method=enhanced_cam_method
         )
         
         print(f"ModularXAIEvaluationSuite initialized:")
         print(f"  Model: {model_name}")
         print(f"  Device: {device_preference}")
         print(f"  Layer mode: {layer_mode}")
+        print(f"  Enhanced CAM method: {enhanced_cam_method}")
     
     def evaluate_enhanced_cam(self, max_images: int = 2, step_size: int = 50, 
                             verbose: bool = None) -> Dict:
@@ -270,6 +274,11 @@ Examples:
     parser.add_argument('--output-csv-dir', default='./csv_exports',
                        help='Base directory for CSV exports (model subdirs will be created)')
     
+    parser.add_argument('--enhanced-cam-method', default='GradCAMEnhanced',
+                       choices=['GradCAMEnhanced', 'GradCAMPlusPlusEnhanced', 'HiResCAMEnhanced', 
+                               'ScoreCAMEnhanced', 'AblationCAMEnhanced'],
+                       help='Enhanced CAM method to use')
+    
     args = parser.parse_args()
     
     # Handle verbosity conflicts
@@ -302,7 +311,12 @@ Examples:
     
     try:
         # Initialize evaluation suite
-        suite = ModularXAIEvaluationSuite(args.model, args.device, args.layer_mode)
+        suite = ModularXAIEvaluationSuite(
+            args.model, 
+            args.device, 
+            args.layer_mode, 
+            args.enhanced_cam_method
+        )
         
         if args.eval_type == 'enhanced-only':
             # Evaluate Enhanced CAM only

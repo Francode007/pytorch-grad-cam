@@ -23,7 +23,13 @@ sys.path.append(str(project_root))
 from XAI_Enhancer_module.evaluator.enhanced_proper_auc_evaluator import EnhancedProperAUCEvaluator
 from XAI_Enhancer_module.utils.model_utils import test_model, get_validation_paths, TRAIN_DATA_PATH
 from XAI_Enhancer_module.utils.optimized_predictor import get_optimized_predictions
-from XAI_Enhancer_module.enhanced_cams.GradCAM_enhanced import GradCAMEnhanced
+from XAI_Enhancer_module.enhanced_cams import (
+    GradCAMEnhanced, 
+    GradCAMPlusPlusEnhanced, 
+    HiResCAMEnhanced, 
+    ScoreCAMEnhanced, 
+    AblationCAMEnhanced
+)
 from XAI_Enhancer_module.utils.directory_manager import create_model_output_dirs, save_analysis_data, save_visualization
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 import cv2
@@ -35,19 +41,22 @@ class AllLayerAnalyzer:
     Provides detailed layer analysis, weight visualization, and performance metrics.
     """
     
-    def __init__(self, model_name: str, device_preference: str = "auto"):
+    def __init__(self, model_name: str, test_images: int = 5, enhanced_cam_method: str = "GradCAMEnhanced"):
         """
         Initialize the analyzer.
         
         Args:
             model_name: Name of the model to analyze
-            device_preference: Device preference ("auto", "cuda", "mps", "cpu")
+            test_images: Number of test images to use
+            enhanced_cam_method: Enhanced CAM method to use
         """
         self.model_name = model_name
-        self.device_preference = device_preference
+        self.test_images = test_images
+        self.enhanced_cam_method = enhanced_cam_method
+        self.device_preference = "auto"  # Default device preference
         
         # Load model
-        self.model = test_model(model_name, device_preference=device_preference)
+        self.model = test_model(model_name, device_preference=self.device_preference)
         self.model.eval()
         
         # Extract all convolutional layers
@@ -56,6 +65,7 @@ class AllLayerAnalyzer:
         
         print(f"AllLayerAnalyzer initialized:")
         print(f"  Model: {model_name}")
+        print(f"  Enhanced CAM method: {enhanced_cam_method}")
         print(f"  Device: {next(self.model.parameters()).device}")
         print(f"  Total conv layers: {len(self.conv_layers)}")
     
@@ -111,8 +121,21 @@ class AllLayerAnalyzer:
         from XAI_Enhancer_module.utils.model_utils import transformations
         image_tensor = transformations(image).float().unsqueeze(0)
         
-        # Initialize Enhanced GradCAM with all layers
-        cam_method = GradCAMEnhanced(self.model, self.conv_layers)
+        # Initialize Enhanced CAM with all layers
+        enhanced_cam_methods = {
+            'GradCAMEnhanced': GradCAMEnhanced,
+            'GradCAMPlusPlusEnhanced': GradCAMPlusPlusEnhanced,
+            'HiResCAMEnhanced': HiResCAMEnhanced,
+            'ScoreCAMEnhanced': ScoreCAMEnhanced,
+            'AblationCAMEnhanced': AblationCAMEnhanced
+        }
+        
+        if self.enhanced_cam_method not in enhanced_cam_methods:
+            raise ValueError(f"Unknown enhanced CAM method: {self.enhanced_cam_method}. "
+                           f"Available methods: {list(enhanced_cam_methods.keys())}")
+        
+        cam_class = enhanced_cam_methods[self.enhanced_cam_method]
+        cam_method = cam_class(self.model, self.conv_layers)
         targets = [ClassifierOutputTarget(predicted_label)]
         
         # Extract CAMs and modified activations
@@ -210,8 +233,9 @@ class AllLayerAnalyzer:
         # Initialize evaluator with all layers
         evaluator = EnhancedProperAUCEvaluator(
             model_name=self.model_name,
-            device_preference=self.device_preference,
-            layer_mode="all"
+            dataset_path=TRAIN_DATA_PATH,
+            layer_mode="all",
+            enhanced_cam_method=self.enhanced_cam_method
         )
         
         # Evaluate Enhanced CAM
@@ -608,6 +632,11 @@ Note: All outputs are automatically saved to model-specific directories:
     parser.add_argument('--output-dir', default='./analysis_results',
                        help='Directory to save results')
     
+    parser.add_argument('--enhanced-cam-method', default='GradCAMEnhanced',
+                       choices=['GradCAMEnhanced', 'GradCAMPlusPlusEnhanced', 'HiResCAMEnhanced', 
+                               'ScoreCAMEnhanced', 'AblationCAMEnhanced'],
+                       help='Enhanced CAM method to use')
+    
     args = parser.parse_args()
     
     # Handle verbosity conflicts
@@ -639,7 +668,7 @@ Note: All outputs are automatically saved to model-specific directories:
     
     try:
         # Initialize analyzer
-        analyzer = AllLayerAnalyzer(args.model, args.device)
+        analyzer = AllLayerAnalyzer(args.model, enhanced_cam_method=args.enhanced_cam_method)
         
         # Run comprehensive analysis
         results = analyzer.evaluate_all_layers(
