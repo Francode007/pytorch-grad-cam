@@ -156,7 +156,8 @@ class OptimizedPredictor:
 def get_optimized_predictions(model_name: str, 
                             image_paths: List[str] = None,
                             use_validation_set: bool = True,
-                            device_preference: str = "auto") -> Tuple[List[int], List[str], List[str]]:
+                            device_preference: str = "auto",
+                            dataset_type: str = "ibs") -> Tuple[List[int], List[str], List[str]]:
     """
     Get optimized predictions for images.
     
@@ -165,17 +166,18 @@ def get_optimized_predictions(model_name: str,
         image_paths: Optional list of specific image paths
         use_validation_set: Whether to use the default validation set
         device_preference: Device preference ("auto", "cuda", "mps", "cpu")
+        dataset_type: "ibs" or "imagenet"
         
     Returns:
         Tuple of (predicted_labels, predicted_class_names, image_paths)
     """
     # Load the model
-    model = test_model(model_name, device_preference=device_preference)
+    model = test_model(model_name, device_preference=device_preference, dataset_type=dataset_type)
     predictor = OptimizedPredictor(model, model_name, device_preference=device_preference)
     
     if use_validation_set and image_paths is None:
         # Use the validation dataloader
-        val_dataloader = get_val_dataloader(model_name)
+        val_dataloader = get_val_dataloader(model_name, dataset_type=dataset_type)
         predictions, class_names, paths = predictor.predict_dataloader(val_dataloader)
     elif image_paths is not None:
         # Use specific image paths
