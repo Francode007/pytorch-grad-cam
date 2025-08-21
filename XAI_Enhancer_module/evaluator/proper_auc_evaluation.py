@@ -285,8 +285,7 @@ class ProperAUCEvaluator:
             print(f"ROAD evaluation failed: {e}")
             return 0.0
     
-    def evaluate_method(self, cam_method_name: str = "GradCAM", 
-                       max_images: int = 2) -> Dict[str, any]:
+    def evaluate_method(self, cam_method_name: str, max_images: int = -1, sample_paths: list = None):
         """Evaluate a CAM method with proper AUC calculations."""
         # Get image paths and predictions
         all_image_paths = get_validation_paths(TRAIN_DATA_PATH)

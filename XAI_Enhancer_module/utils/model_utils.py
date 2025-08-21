@@ -189,66 +189,82 @@ def get_val_dataloader(model_name, dataset_type="ibs"):
     return DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
     return DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
-# Model builder
-def build_model_inf(model_name, num_classes=2, base_model_path=None, dataset_type="ibs"):
+def get_model_builder(model_name):
     """
-    Build an inference model.
+    Returns the appropriate model builder function from torchvision.models or timm.
+    
+    Args:
+        model_name (str): The name of the model.
+        
+    Returns:
+        A function that builds the specified model.
+    """
+    if hasattr(models, model_name):
+        return getattr(models, model_name)
+    elif timm.is_model(model_name):
+        return timm.create_model
+    else:
+        raise ValueError(f"Model '{model_name}' not found in torchvision or timm.")
+
+# Model builder
+def build_model_inf(model_name, num_classes, base_model_path, dataset_type):
+    """
+    Build model for inference.
     
     Args:
         model_name: Name of the model
-        num_classes: Number of output classes
-        base_model_path: Optional base path for loading models
+        num_classes: Number of classes
+        base_model_path: Path to model weights
         dataset_type: "ibs" or "imagenet"
         
     Returns:
-        PyTorch model
+        Model and path to weights
     """
-    # Use default path if none is provided
-    if base_model_path is None:
-        base_model_path = BASE_MODEL_PATH
-        
-    model_path = Path(base_model_path) / f'{model_name}_{dataset_type}.pth'
+    model_builder = get_model_builder(model_name)
     
-    print(f"Attempting to load model from: {model_path}")
-
-    # Load the appropriate model based on its name
-    if model_name.startswith('resnet'):
-        if model_name == 'resnet18':
-            model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT if dataset_type == "imagenet" else None)
-        elif model_name == 'resnet34':
-            model = models.resnet34(weights=models.ResNet34_Weights.DEFAULT if dataset_type == "imagenet" else None)
-        elif model_name == 'resnet50':
-            model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT if dataset_type == "imagenet" else None)
+    # For ImageNet, the model is already pretrained, so no specific path is needed
+    if dataset_type.lower() == "imagenet":
+        if model_name.startswith('efficientnet'):
+            model = timm.create_model(model_name, pretrained=True, num_classes=num_classes)
         else:
-            raise ValueError(f"Unsupported ResNet model: {model_name}")
+            model = model_builder(pretrained=True)
+        return model, None
+
+        # For other datasets, construct the path and load weights
+    model_path = Path(base_model_path) / f"{model_name}.pth"
+    
+    if not model_path.exists():
+        print(f"Warning: Model weights not found at {model_path}")
+        # Return a non-pretrained model
+        if model_name.startswith('efficientnet'):
+            model = timm.create_model(model_name, pretrained=False, num_classes=num_classes)
+        else:
+            model = model_builder(pretrained=False, num_classes=num_classes)
+        return model, None
+    
+    # Build model and load state dict
+    if model_name.startswith('efficientnet'):
+        model = timm.create_model(model_name, pretrained=False, num_classes=num_classes)
+    else:
+        model = model_builder(num_classes=num_classes)
+    
+    try:
+        # Try loading with weights_only=False for compatibility with older model files
+        state_dict = torch.load(model_path, map_location=torch.device('cpu'), weights_only=False)
         
-        num_ftrs = model.fc.in_features
-        model.fc = nn.Linear(num_ftrs, num_classes)
-
-    elif model_name.startswith('efficientnet'):
-        if model_name == 'efficientnet_b0':
-            model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT if dataset_type == "imagenet" else None)
-        elif model_name == 'efficientnet_b4':
-            model = models.efficientnet_b4(weights=models.EfficientNet_B4_Weights.DEFAULT if dataset_type == "imagenet" else None)
-        else:
-            raise ValueError(f"Unsupported EfficientNet model: {model_name}")
+        # Handle different checkpoint formats
+        if 'model_state_dict' in state_dict:
+            state_dict = state_dict['model_state_dict']
+        elif 'state_dict' in state_dict:
+            state_dict = state_dict['state_dict']
             
-        num_ftrs = model.classifier[1].in_features
-        model.classifier[1] = nn.Linear(num_ftrs, num_classes)
-        
-    else:
-        raise ValueError(f"Model {model_name} not supported yet.")
+        model.load_state_dict(state_dict)
+    except Exception as e:
+        print(f"Error loading state dictionary from {model_path}: {e}")
+        print(f"Failed to build or load model '{model_name}'.")
+        return None, None
 
-    # Load state dict if the model file exists
-    if model_path.exists():
-        print(f"Loading model weights from {model_path}")
-        model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
-    elif dataset_type != "imagenet":
-        print(f"Warning: Model file not found at {model_path}. Using a randomly initialized model.")
-    else:
-        print("Using pre-trained ImageNet weights from torchvision.")
-        
-    return model
+    return model, model_path
 
 def pred_model(model_name, num_classes=2, base_model_path=BASE_MODEL_PATH, 
                device_preference="auto", dataset_type="ibs"):
@@ -272,14 +288,23 @@ def pred_model(model_name, num_classes=2, base_model_path=BASE_MODEL_PATH,
     
     model, model_path = build_model_inf(model_name, num_classes, base_model_path, dataset_type)
     
+    # Check if model loading failed
+    if model is None:
+        print(f"Failed to load model '{model_name}'. Please check the model path and file.")
+        return None
+    
     # Load weights for IBS models, ImageNet models are already pretrained
     if model_path is not None:
         # Fix for PyTorch 2.6 weights_only default change
         try:
-            state_dict = torch.load(model_path, map_location=torch.device(device), weights_only=True)
-        except Exception:
-            # Fallback to weights_only=False for older model files
             state_dict = torch.load(model_path, map_location=torch.device(device), weights_only=False)
+        except Exception:
+            # Fallback to weights_only=True for newer model files
+            try:
+                state_dict = torch.load(model_path, map_location=torch.device(device), weights_only=True)
+            except Exception as e:
+                print(f"Error loading model weights from {model_path}: {e}")
+                return None
         
         if 'model_state_dict' in state_dict:
             state_dict = state_dict['model_state_dict']
@@ -314,19 +339,32 @@ def test_model(model_name, num_classes=2, base_model_path=BASE_MODEL_PATH,
         num_classes = 1000  # Override for ImageNet
     
     model, model_path = build_model_inf(model_name, num_classes, base_model_path, dataset_type)
+
+    if model is None:
+        print(f"Failed to build or load model '{model_name}'.")
+        return None
     
     # Load weights for IBS models, ImageNet models are already pretrained
     if model_path is not None:
         # Fix for PyTorch 2.6 weights_only default change
         try:
-            state_dict = torch.load(model_path, map_location=torch.device(device), weights_only=True)
-        except Exception:
-            # Fallback to weights_only=False for older model files
             state_dict = torch.load(model_path, map_location=torch.device(device), weights_only=False)
+        except Exception:
+            # Fallback to weights_only=True for newer model files
+            try:
+                state_dict = torch.load(model_path, map_location=torch.device(device), weights_only=True)
+            except Exception as e:
+                print(f"Error loading model weights from {model_path}: {e}")
+                return None
         
         if 'model_state_dict' in state_dict:
             state_dict = state_dict['model_state_dict']
         model.load_state_dict(state_dict)
+    
+    # Final safety check
+    if model is None:
+        print(f"Failed to load model '{model_name}'.")
+        return None
     
     model.eval()
     model.to(device)
