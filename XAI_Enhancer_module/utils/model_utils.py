@@ -49,10 +49,11 @@ def get_device(device_preference: str = "auto"):
         print(f"Warning: Unknown device '{device_preference}', using auto detection")
         return get_device("auto")
 
-# Paths and constants
-BASE_MODEL_PATH = "/Users/f0s03xp/Desktop/IBS-research/models"
-TRAIN_DATA_PATH = '/Users/f0s03xp/Desktop/IBS-research/og_data/IBS-preprocessed-dataset'
-IMAGENET_VAL_PATH = '/Users/f0s03xp/Desktop/IBS-research/og_data/imagenet-val'
+# Paths and constants - Make these configurable
+import os
+BASE_MODEL_PATH = os.environ.get('BASE_MODEL_PATH', "/Users/f0s03xp/Desktop/IBS-research/models")
+TRAIN_DATA_PATH = os.environ.get('TRAIN_DATA_PATH', '/Users/f0s03xp/Desktop/IBS-research/og_data/IBS-preprocessed-dataset')
+IMAGENET_VAL_PATH = os.environ.get('IMAGENET_VAL_PATH', '/Users/f0s03xp/Desktop/IBS-research/og_data/imagenet-val')
 
 # Dataset-specific constants
 IBS_MEAN = [0.6380, 0.3422, 0.2275]
