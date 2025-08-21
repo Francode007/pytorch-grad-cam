@@ -50,7 +50,24 @@ class EnhancedProperAUCEvaluator(ProperAUCEvaluator):
             layer_mode: Layer selection mode ("last", "last_5", "all")
             enhanced_cam_method: Enhanced CAM method to use
         """
-        super().__init__(model_name, device_preference="auto")
+        # Initialize attributes without calling super().__init__ to avoid loading model twice
+        self.model_name = model_name
+        self.device = next(model.parameters()).device
+        self.dataset_path = dataset_path
+        
+        # Use the passed model instead of loading a new one
+        self.model = model
+        self.model.eval()
+        
+        # Get image size
+        self.img_size = 224
+        if model_name in ('b4',):
+            self.img_size = 384
+            
+        print(f"ProperAUCEvaluator initialized:")
+        print(f"  Model: {model_name}")
+        print(f"  Device: {self.device}")
+        print(f"  Image size: {self.img_size}")
         
         # Store enhanced CAM method
         self.enhanced_cam_method = enhanced_cam_method
@@ -70,6 +87,304 @@ class EnhancedProperAUCEvaluator(ProperAUCEvaluator):
         print(f"  Enhanced CAM method: {enhanced_cam_method}")
         print(f"  Layer mode: {layer_mode}")
         print(f"  Number of layers: {len(self.conv_layers)}")
+    
+    def _get_target_layers(self):
+        """Get target layers for the model."""
+        if 'resnet' in self.model_name:
+            return [self.model.layer4[-1]]
+        elif 'densenet' in self.model_name:
+            return [self.model.features.norm5]
+        elif self.model_name.startswith('b'):  # EfficientNet
+            return [self.model.features[-1]]
+        else:
+            # Find last conv layer
+            for name, module in reversed(list(self.model.named_modules())):
+                if isinstance(module, torch.nn.Conv2d):
+                    return [module]
+            raise ValueError(f"Could not find target layer for model {self.model_name}")
+    
+    def extract_cam(self, image_path: str, predicted_label: int, 
+                   cam_method_name: str = "GradCAM") -> Tuple[torch.Tensor, np.ndarray]:
+        """Extract CAM for a single image."""
+        from PIL import Image
+        import torchvision.transforms as transforms
+        from XAI_Enhancer_module.utils.model_utils import MEAN, STD
+        
+        # Load and preprocess image
+        image = Image.open(image_path).convert('RGB')
+        
+        # Create transform
+        transform = transforms.Compose([
+            transforms.Resize((self.img_size, self.img_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=MEAN, std=STD)
+        ])
+        
+        image_tensor = transform(image).unsqueeze(0).to(self.device)
+        
+        # Get CAM method
+        from pytorch_grad_cam import (
+            GradCAM, GradCAMPlusPlus, EigenGradCAM, EigenCAM, 
+            HiResCAM, LayerCAM, ScoreCAM
+        )
+        from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+        
+        cam_methods = {
+            "GradCAM": GradCAM,
+            "GradCAM++": GradCAMPlusPlus,
+            "EigenGradCAM": EigenGradCAM,
+            "EigenCAM": EigenCAM,
+            "HiResCAM": HiResCAM,
+            "LayerCAM": LayerCAM,
+            "ScoreCAM": ScoreCAM,
+        }
+        
+        if cam_method_name not in cam_methods:
+            raise ValueError(f"Unknown CAM method: {cam_method_name}")
+        
+        cam_class = cam_methods[cam_method_name]
+        target_layers = self._get_target_layers()
+        
+        # Generate CAM
+        cam = cam_class(model=self.model, target_layers=target_layers)
+        targets = [ClassifierOutputTarget(predicted_label)]
+        
+        with cam:
+            grayscale_cam = cam(input_tensor=image_tensor, targets=targets)
+        
+        return image_tensor, grayscale_cam[0]
+    
+    def compute_insertion_auc(self, image_tensor: torch.Tensor, 
+                            saliency_map: np.ndarray, 
+                            target_class: int, 
+                            step_size: int = 224) -> Tuple[np.ndarray, float]:
+        """Compute insertion AUC with proper normalization."""
+        import torch.nn.functional as F
+        
+        # Flatten and sort pixels by importance (descending)
+        flat_saliency = saliency_map.flatten()
+        sorted_indices = np.argsort(-flat_saliency)  # Negative for descending
+        
+        total_pixels = self.img_size * self.img_size
+        n_steps = (total_pixels + step_size - 1) // step_size
+        
+        scores = np.zeros(n_steps + 1)
+        
+        # Start with blurred baseline
+        baseline_image = self._create_blurred_baseline(image_tensor)
+        current_image = baseline_image.clone()
+        
+        # Initial score (blurred baseline)
+        with torch.no_grad():
+            output = self.model(current_image)
+            prob = F.softmax(output, dim=1)[0, target_class].item()
+        scores[0] = prob
+        
+        # Progressive insertion
+        flat_original = image_tensor.view(-1, total_pixels)  # Shape: (C, H*W)
+        flat_current = current_image.view(-1, total_pixels)
+        
+        for step in range(n_steps):
+            start_idx = step * step_size
+            end_idx = min((step + 1) * step_size, total_pixels)
+            
+            # Get pixel indices to insert in this step
+            pixel_indices = sorted_indices[start_idx:end_idx]
+            
+            # Insert important pixels from original image
+            flat_current[:, pixel_indices] = flat_original[:, pixel_indices]
+            
+            current_image = flat_current.view(image_tensor.shape)
+            
+            # Get prediction
+            with torch.no_grad():
+                output = self.model(current_image)
+                prob = F.softmax(output, dim=1)[0, target_class].item()
+            scores[step + 1] = prob
+        
+        # Calculate AUC using trapezoidal rule, normalized to [0,1]
+        x = np.linspace(0, 1, len(scores))
+        auc = np.trapz(scores, x)
+        
+        return scores, auc
+    
+    def compute_deletion_auc(self, image_tensor: torch.Tensor, 
+                           saliency_map: np.ndarray, 
+                           target_class: int, 
+                           step_size: int = 224) -> Tuple[np.ndarray, float]:
+        """Compute deletion AUC with proper normalization."""
+        import torch.nn.functional as F
+        
+        # Flatten and sort pixels by importance (descending)
+        flat_saliency = saliency_map.flatten()
+        sorted_indices = np.argsort(-flat_saliency)  # Negative for descending
+        
+        total_pixels = self.img_size * self.img_size
+        n_steps = (total_pixels + step_size - 1) // step_size
+        
+        scores = np.zeros(n_steps + 1)
+        current_image = image_tensor.clone()
+        
+        # Initial score (original image)
+        with torch.no_grad():
+            output = self.model(current_image)
+            prob = F.softmax(output, dim=1)[0, target_class].item()
+        scores[0] = prob
+        
+        # Progressive deletion
+        flat_current = current_image.view(-1, total_pixels)  # Shape: (C, H*W)
+        flat_baseline = self._create_blurred_baseline(image_tensor).view(-1, total_pixels)
+        
+        for step in range(n_steps):
+            start_idx = step * step_size
+            end_idx = min((step + 1) * step_size, total_pixels)
+            
+            # Get pixel indices to delete in this step
+            pixel_indices = sorted_indices[start_idx:end_idx]
+            
+            # Replace important pixels with blurred baseline
+            flat_current[:, pixel_indices] = flat_baseline[:, pixel_indices]
+            
+            current_image = flat_current.view(image_tensor.shape)
+            
+            # Get prediction
+            with torch.no_grad():
+                output = self.model(current_image)
+                prob = F.softmax(output, dim=1)[0, target_class].item()
+            scores[step + 1] = prob
+        
+        # Calculate AUC using trapezoidal rule, normalized to [0,1]
+        x = np.linspace(0, 1, len(scores))
+        auc = np.trapz(scores, x)
+        
+        return scores, auc
+        
+    def _create_blurred_baseline(self, image_tensor: torch.Tensor) -> torch.Tensor:
+        """Create blurred baseline image."""
+        import torch.nn.functional as F
+        
+        # Create Gaussian blur kernel
+        def get_gaussian_kernel(size=11, sigma=5):
+            """Create 2D Gaussian kernel."""
+            x = torch.arange(-size//2 + 1., size//2 + 1.)
+            x = torch.exp(-0.5 * (x / sigma).pow(2))
+            kernel = x[:, None] * x[None, :]
+            kernel = kernel / kernel.sum()
+            return kernel
+        
+        kernel = get_gaussian_kernel().to(image_tensor.device)
+        kernel = kernel.expand(image_tensor.size(1), 1, kernel.size(0), kernel.size(1))
+        
+        # Apply Gaussian blur
+        blurred = F.conv2d(image_tensor, kernel, padding=kernel.size(-1)//2, groups=image_tensor.size(1))
+        return blurred
+    
+    def evaluate_road(self, image_tensor: torch.Tensor, 
+                     saliency_map: np.ndarray, 
+                     target_class: int) -> float:
+        """Evaluate using ROAD metric."""
+        try:
+            from pytorch_grad_cam.metrics.road import ROADCombined
+            from pytorch_grad_cam.utils.model_targets import ClassifierOutputSoftmaxTarget
+            
+            road_metric = ROADCombined(percentiles=[20, 40, 60, 80])
+            
+            # Ensure tensor has correct shape
+            if image_tensor.dim() == 3:
+                image_tensor = image_tensor.unsqueeze(0)  # Add batch dimension
+            image_tensor = image_tensor.to(self.device)
+            
+            # Fix saliency map dimensions for ROAD
+            if saliency_map.ndim == 3:
+                # Remove extra dimension if present (1, H, W) -> (H, W)
+                saliency_map = saliency_map.squeeze(0)
+            
+            # ROAD expects saliency_map with shape (batch_size, H, W)
+            saliency_tensor = np.expand_dims(saliency_map, axis=0)
+            
+            targets = [ClassifierOutputSoftmaxTarget(target_class)]
+            
+            scores = road_metric(image_tensor, saliency_tensor, targets, self.model)
+            return scores[0]
+        except Exception as e:
+            print(f"ROAD evaluation failed: {e}")
+            return 0.0
+    
+    def evaluate_method(self, cam_method_name: str, max_images: int = -1, sample_paths: list = None):
+        """Evaluate a CAM method with proper AUC calculations."""
+        from XAI_Enhancer_module.utils.model_utils import get_validation_paths, TRAIN_DATA_PATH
+        from XAI_Enhancer_module.utils.optimized_predictor import get_optimized_predictions
+        
+        # Use dataset_path if available, otherwise fall back to TRAIN_DATA_PATH
+        data_path = getattr(self, 'dataset_path', TRAIN_DATA_PATH) if hasattr(self, 'dataset_path') else TRAIN_DATA_PATH
+        
+        # Get image paths and predictions
+        all_image_paths = get_validation_paths(data_path)
+        
+        # Handle special cases for max_images
+        if max_images == -1 or max_images is None:
+            # Use entire validation dataset
+            image_paths = all_image_paths
+        else:
+            # Use specified number of images
+            image_paths = all_image_paths[:max_images]
+        predicted_labels, _, _ = get_optimized_predictions(
+            self.model_name, image_paths, use_validation_set=False
+        )
+        
+        print(f"\nEvaluating {cam_method_name} on {len(image_paths)} images...")
+        
+        insertion_aucs = []
+        deletion_aucs = []
+        road_scores = []
+        
+        for image_path, predicted_label in tqdm(zip(image_paths, predicted_labels), 
+                                              desc=f"Processing {cam_method_name}"):
+            try:
+                # Extract CAM
+                image_tensor, saliency_map = self.extract_cam(
+                    image_path, predicted_label, cam_method_name
+                )
+                
+                # Compute insertion AUC
+                _, insertion_auc = self.compute_insertion_auc(
+                    image_tensor, saliency_map, predicted_label
+                )
+                insertion_aucs.append(insertion_auc)
+                
+                # Compute deletion AUC
+                _, deletion_auc = self.compute_deletion_auc(
+                    image_tensor, saliency_map, predicted_label
+                )
+                deletion_aucs.append(deletion_auc)
+                
+                # Compute ROAD score
+                road_score = self.evaluate_road(
+                    image_tensor, saliency_map, predicted_label
+                )
+                road_scores.append(road_score)
+                
+            except Exception as e:
+                print(f"Error processing {image_path}: {e}")
+                continue
+        
+        # Compile results
+        results = {
+            'cam_method': cam_method_name,
+            'model_name': self.model_name,
+            'num_images': len(insertion_aucs),
+            'insertion_auc_mean': np.mean(insertion_aucs),
+            'insertion_auc_std': np.std(insertion_aucs),
+            'deletion_auc_mean': np.mean(deletion_aucs),
+            'deletion_auc_std': np.std(deletion_aucs),
+            'road_mean': np.mean(road_scores),
+            'road_std': np.std(road_scores),
+            'insertion_aucs': insertion_aucs,
+            'deletion_aucs': deletion_aucs,
+            'road_scores': road_scores
+        }
+        
+        return results
     
     def _get_enhanced_cam_layers(self, layer_mode: str = "last") -> List[torch.nn.Module]:
         """
