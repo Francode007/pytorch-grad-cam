@@ -35,9 +35,10 @@ class MultiDatasetXAIEvaluationSuite:
     Uses ProperAUCEvaluator as the base for all evaluations.
     """
     
-    def __init__(self, model_name: str, dataset_type: str = "ibs", 
-                 device_preference: str = "auto", layer_mode: str = "last", 
-                 enhanced_cam_method: str = "GradCAMEnhanced"):
+    def __init__(self, model_name: str, dataset_type: str = "ibs",
+                 device_preference: str = "auto", layer_mode: str = "last",
+                 enhanced_cam_method: str = "GradCAMEnhanced",
+                 base_model_path: Optional[str] = None):
         """
         Initialize the evaluation suite.
         
@@ -47,12 +48,14 @@ class MultiDatasetXAIEvaluationSuite:
             device_preference: Device preference ("auto", "cuda", "mps", "cpu")
             layer_mode: Layer selection mode for Enhanced CAM
             enhanced_cam_method: Enhanced CAM method to use
+            base_model_path: Optional path to the directory containing model weights
         """
         self.model_name = model_name
         self.dataset_type = dataset_type.lower()
         self.device_preference = device_preference
         self.layer_mode = layer_mode
         self.enhanced_cam_method = enhanced_cam_method
+        self.base_model_path = base_model_path
         
         # Determine dataset path and configuration
         if self.dataset_type == "imagenet":
@@ -67,7 +70,8 @@ class MultiDatasetXAIEvaluationSuite:
             model_name, 
             num_classes=self.num_classes,
             device_preference=device_preference,
-            dataset_type=self.dataset_type
+            dataset_type=self.dataset_type,
+            base_model_path=self.base_model_path
         )
         
         # Initialize evaluator
@@ -80,6 +84,8 @@ class MultiDatasetXAIEvaluationSuite:
         print(f"  Layer mode: {layer_mode}")
         print(f"  Enhanced CAM method: {enhanced_cam_method}")
         print(f"  Number of classes: {self.num_classes}")
+        if self.base_model_path:
+            print(f"  Model base path: {self.base_model_path}")
     
     def _create_evaluator(self):
         """Create appropriate evaluator based on dataset type."""

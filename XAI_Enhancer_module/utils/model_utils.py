@@ -10,6 +10,8 @@ import timm
 import cv2
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+from pathlib import Path
+from PIL import Image
 
 # Device configuration
 def get_device(device_preference: str = "auto"):
@@ -188,81 +190,65 @@ def get_val_dataloader(model_name, dataset_type="ibs"):
     return DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
 # Model builder
-def build_model_inf(model_name, num_classes=2, base_model_path=BASE_MODEL_PATH, dataset_type="ibs"):
+def build_model_inf(model_name, num_classes=2, base_model_path=None, dataset_type="ibs"):
     """
-    Build model for inference.
+    Build an inference model.
     
     Args:
         model_name: Name of the model
-        num_classes: Number of classes (2 for IBS, 1000 for ImageNet)
-        base_model_path: Path to saved model weights
+        num_classes: Number of output classes
+        base_model_path: Optional base path for loading models
         dataset_type: "ibs" or "imagenet"
-    
+        
     Returns:
-        Tuple of (model, model_path)
+        PyTorch model
     """
-    if dataset_type.lower() == "imagenet":
-        # Use pretrained ImageNet models
-        if model_name == 'b0':
-            model = models.efficientnet_b0(pretrained=True)
-            model_path = None  # No custom path for pretrained
-        elif model_name == 'b4':
-            model = models.efficientnet_b4(pretrained=True)
-            model_path = None
-        elif model_name == 'resnet50':
-            model = models.resnet50(pretrained=True)
-            model_path = None
-        elif model_name == 'resnet18':
-            model = models.resnet18(pretrained=True)
-            model_path = None
-        elif model_name == 'resnet34':
-            model = models.resnet34(pretrained=True)
-            model_path = None
-        elif model_name == 'densenet':
-            model = timm.create_model('densenet121', pretrained=True)
-            model_path = None
-        elif model_name == 'xception':
-            model = timm.create_model('xception', pretrained=True)
-            model_path = None
-        else:
-            raise ValueError(f"Unknown model_name for ImageNet: {model_name}")
+    # Use default path if none is provided
+    if base_model_path is None:
+        base_model_path = BASE_MODEL_PATH
         
-        return model, model_path
+    model_path = Path(base_model_path) / f'{model_name}_{dataset_type}.pth'
     
-    else:
-        # Original IBS model building logic
-        if model_name == 'b0':
-            model = models.efficientnet_b0(pretrained=False)
-            model.classifier[1] = nn.Linear(1280, num_classes)
-            model_path = f"{base_model_path}/effnetb0.pth"
-        elif model_name == 'b4':
-            model = models.efficientnet_b4(pretrained=False)
-            model.classifier[1] = nn.Linear(1792, num_classes)
-            model_path = f"{base_model_path}/effnetb4.pth"
-        elif model_name == 'resnet50':
-            model = models.resnet50(pretrained=False)
-            model.fc = nn.Linear(2048, num_classes)
-            model_path = f"{base_model_path}/resnet50.pth"
-        elif model_name == 'densenet':
-            model = timm.create_model('densenet121', pretrained=False)
-            model.classifier = nn.Linear(1024, num_classes)
-            model_path = f"{base_model_path}/densenet121.pth"
-        elif model_name == 'resnet18':
-            model = models.resnet18(pretrained=False)
-            model.fc = nn.Linear(512, num_classes)
-            model_path = f"{base_model_path}/resnet18.pth"
+    print(f"Attempting to load model from: {model_path}")
+
+    # Load the appropriate model based on its name
+    if model_name.startswith('resnet'):
+        if model_name == 'resnet18':
+            model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT if dataset_type == "imagenet" else None)
         elif model_name == 'resnet34':
-            model = models.resnet34(pretrained=False)
-            model.fc = nn.Linear(512, num_classes)
-            model_path = f"{base_model_path}/resnet34.pth"
-        elif model_name == 'xception':
-            model = timm.create_model('xception', pretrained=False)
-            model.fc = nn.Linear(2048, num_classes)
-            model_path = f"{base_model_path}/xception_net.pth"
+            model = models.resnet34(weights=models.ResNet34_Weights.DEFAULT if dataset_type == "imagenet" else None)
+        elif model_name == 'resnet50':
+            model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT if dataset_type == "imagenet" else None)
         else:
-            raise ValueError(f"Unknown model_name: {model_name}")
+            raise ValueError(f"Unsupported ResNet model: {model_name}")
         
-        return model, model_path
+        num_ftrs = model.fc.in_features
+        model.fc = nn.Linear(num_ftrs, num_classes)
+
+    elif model_name.startswith('efficientnet'):
+        if model_name == 'efficientnet_b0':
+            model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT if dataset_type == "imagenet" else None)
+        elif model_name == 'efficientnet_b4':
+            model = models.efficientnet_b4(weights=models.EfficientNet_B4_Weights.DEFAULT if dataset_type == "imagenet" else None)
+        else:
+            raise ValueError(f"Unsupported EfficientNet model: {model_name}")
+            
+        num_ftrs = model.classifier[1].in_features
+        model.classifier[1] = nn.Linear(num_ftrs, num_classes)
+        
+    else:
+        raise ValueError(f"Model {model_name} not supported yet.")
+
+    # Load state dict if the model file exists
+    if model_path.exists():
+        print(f"Loading model weights from {model_path}")
+        model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+    elif dataset_type != "imagenet":
+        print(f"Warning: Model file not found at {model_path}. Using a randomly initialized model.")
+    else:
+        print("Using pre-trained ImageNet weights from torchvision.")
+        
+    return model
 
 def pred_model(model_name, num_classes=2, base_model_path=BASE_MODEL_PATH, 
                device_preference="auto", dataset_type="ibs"):
