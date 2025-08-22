@@ -263,6 +263,18 @@ class EnhancedProperAUCEvaluator(ProperAUCEvaluator):
         """Create blurred baseline image."""
         import torch.nn.functional as F
         
+        # Ensure tensor has batch dimension
+        if len(image_tensor.shape) == 3:
+            image_tensor = image_tensor.unsqueeze(0)
+        
+        # Ensure tensor is in correct format (batch, channels, height, width)
+        if len(image_tensor.shape) == 4:
+            batch, channels, height, width = image_tensor.shape
+            if channels > 100:  # If channels is suspiciously large (like 224), likely wrong format
+                # This shouldn't happen anymore with the fix above, but keep as safety
+                print(f"Warning: Unexpected tensor shape {image_tensor.shape}, skipping blur")
+                return image_tensor
+        
         # Create Gaussian blur kernel
         def get_gaussian_kernel(size=11, sigma=5):
             """Create 2D Gaussian kernel."""
@@ -457,6 +469,13 @@ class EnhancedProperAUCEvaluator(ProperAUCEvaluator):
         image_tensor, saliency_map = self.enhanced_cam_extractor.extract_saliency_map(
             image_path, predicted_label
         )
+        
+        # Ensure tensor has batch dimension for evaluation
+        if len(image_tensor.shape) == 3:
+            image_tensor = image_tensor.unsqueeze(0)
+        
+        # Ensure tensor is on the correct device
+        image_tensor = image_tensor.to(self.device)
         
         # Convert saliency map to numpy if it's a tensor
         if isinstance(saliency_map, torch.Tensor):

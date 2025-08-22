@@ -17,6 +17,7 @@ sys.path.append(str(project_root))
 from XAI_Enhancer_module.evaluator.enhanced_proper_auc_evaluator import EnhancedProperAUCEvaluator
 from XAI_Enhancer_module.evaluator.proper_auc_evaluation import ProperAUCEvaluator
 from XAI_Enhancer_module.utils.directory_manager import save_evaluation_results, print_directory_structure
+from XAI_Enhancer_module.utils.model_utils import test_model, get_validation_paths, TRAIN_DATA_PATH
 
 class ModularXAIEvaluationSuite:
     """
@@ -38,9 +39,14 @@ class ModularXAIEvaluationSuite:
         self.device_preference = device_preference
         self.layer_mode = layer_mode
         self.enhanced_cam_method = enhanced_cam_method
+        
+        # Load the model
+        self.model = test_model(model_name, device_preference=device_preference)
+        
+        # Create enhanced evaluator with the loaded model
         self.enhanced_evaluator = EnhancedProperAUCEvaluator(
-            model_name, dataset_path="", layer_mode=layer_mode, 
-            enhanced_cam_method=enhanced_cam_method
+            self.model, model_name, dataset_path=TRAIN_DATA_PATH, 
+            layer_mode=layer_mode, enhanced_cam_method=enhanced_cam_method
         )
         
         print(f"ModularXAIEvaluationSuite initialized:")

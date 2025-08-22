@@ -243,9 +243,10 @@ class OptimizedCamExtractor:
         softmax_weights = torch.softmax(torch.from_numpy(cosine_similarities), dim=0)
         
         # Compute weighted CAM
-        weighted_cam = torch.zeros_like(torch.from_numpy(cam_per_layer[0][0, :]))
+        # cam_per_layer[i] has shape (1, 1, H, W), so we need [0, 0, :, :] to get the 2D map
+        weighted_cam = torch.zeros_like(torch.from_numpy(cam_per_layer[0][0, 0, :, :]))
         for i, weight in enumerate(softmax_weights):
-            cam_tensor = torch.from_numpy(cam_per_layer[i][0, :])
+            cam_tensor = torch.from_numpy(cam_per_layer[i][0, 0, :, :])
             weighted_cam += weight * cam_tensor
         
         # Normalize the weighted CAM

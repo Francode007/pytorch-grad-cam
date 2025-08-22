@@ -66,13 +66,22 @@ class MultiDatasetXAIEvaluationSuite:
             self.num_classes = 2
         
         # Load the model
-        self.model = test_model(
-            model_name, 
-            num_classes=self.num_classes,
-            device_preference=device_preference,
-            dataset_type=self.dataset_type,
-            base_model_path=self.base_model_path
-        )
+        if self.base_model_path is not None:
+            self.model = test_model(
+                model_name, 
+                num_classes=self.num_classes,
+                device_preference=device_preference,
+                dataset_type=self.dataset_type,
+                base_model_path=self.base_model_path
+            )
+        else:
+            # Use default base_model_path from test_model function
+            self.model = test_model(
+                model_name, 
+                num_classes=self.num_classes,
+                device_preference=device_preference,
+                dataset_type=self.dataset_type
+            )
         
         # Initialize evaluator
         self.evaluator = self._create_evaluator()
@@ -596,7 +605,7 @@ Dataset Notes:
                        choices=['GradCAM', 'GradCAM++', 'EigenGradCAM', 'EigenCAM', 'HiResCAM', 'LayerCAM', 'ScoreCAM'],
                        help='CAM methods to evaluate')
     
-    parser.add_argument('--step-size', type=int, default=50,
+    parser.add_argument('--step-size', type=int, default=224,
                        help='Step size for insertion/deletion evaluation')
     
     parser.add_argument('--device', default='auto',
