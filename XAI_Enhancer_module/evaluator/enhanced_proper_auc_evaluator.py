@@ -35,7 +35,7 @@ class EnhancedProperAUCEvaluator(ProperAUCEvaluator):
     """
     
     def __init__(self, 
-                 model, 
+                #  model, 
                  model_name: str, 
                  dataset_path: str, 
                  layer_mode: str = "last",
