@@ -22,21 +22,25 @@ class ImageNetXAIEvaluationSuite:
     """
     
     def __init__(self, model_name: str, imagenet_path: str, device_preference: str = "auto", 
-                 layer_mode: str = "last", enhanced_cam_method: str = "GradCAMEnhanced"):
+                 layer_mode: str = "last", enhanced_cam_method: str = "GradCAMEnhanced",
+                 model_cache_dir: str = "/Users/f0s03xp/pytorch_models/"):
         self.model_name = model_name
         self.imagenet_path = imagenet_path
         self.device_preference = device_preference
         self.layer_mode = layer_mode
         self.enhanced_cam_method = enhanced_cam_method
+        self.model_cache_dir = model_cache_dir
         self.evaluator = ImageNetProperAUCEvaluator(
             model_name=model_name,
             imagenet_path=imagenet_path,
             device_preference=device_preference,
             layer_mode=layer_mode,
-            enhanced_cam_method=enhanced_cam_method
+            enhanced_cam_method=enhanced_cam_method,
+            model_cache_dir=model_cache_dir
         )
         print(f"ImageNetXAIEvaluationSuite initialized:")
         print(f"  Model: {model_name}")
+        print(f"  Model cache dir: {model_cache_dir}")
         print(f"  ImageNet path: {imagenet_path}")
         print(f"  Device: {device_preference}")
         print(f"  Layer mode: {layer_mode}")
@@ -194,17 +198,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Evaluate Enhanced CAM on ImageNet with ResNet50
+  # Evaluate Enhanced CAM on ImageNet with ResNet50 (using pre-downloaded models)
   python imagenet_evaluation.py --model resnet50 --imagenet-path /path/to/imagenet/val --eval-type enhanced-only --max-images 100
 
-  # Compare methods on specific classes
-  python imagenet_evaluation.py --model resnet50 --imagenet-path /path/to/imagenet/val --eval-type comparison --classes tench goldfish "great white shark" --max-images 20
+  # Compare methods on specific classes with custom model cache
+  python imagenet_evaluation.py --model resnet50 --imagenet-path /path/to/imagenet/val --eval-type comparison --classes tench goldfish "great white shark" --max-images 20 --model-cache-dir /custom/path/to/models
 
   # Large scale evaluation with quiet mode
   python imagenet_evaluation.py --model resnet50 --imagenet-path /path/to/imagenet/val --eval-type comparison --max-images 1000 --quiet
 
   # Class-specific detailed analysis
   python imagenet_evaluation.py --model resnet50 --imagenet-path /path/to/imagenet/val --eval-type class-specific --classes tench goldfish --max-images-per-class 15
+
+Note: Models will be loaded from --model-cache-dir (default: /Users/f0s03xp/pytorch_models/). 
+      Use the download_models.py script to pre-download models to this directory.
         """
     )
     parser.add_argument('--model', '-m', default='resnet50',
@@ -247,6 +254,8 @@ Examples:
                        choices=['GradCAMEnhanced', 'GradCAMPlusPlusEnhanced', 'HiResCAMEnhanced', 
                                'ScoreCAMEnhanced', 'AblationCAMEnhanced'],
                        help='Enhanced CAM method to use')
+    parser.add_argument('--model-cache-dir', default='/Users/f0s03xp/pytorch_models/',
+                       help='Directory containing pre-downloaded models (default: /Users/f0s03xp/pytorch_models/)')
     args = parser.parse_args()
     if args.verbose and args.quiet:
         print("❌ Error: Cannot specify both --verbose and --quiet")
@@ -262,6 +271,7 @@ Examples:
     print(f"{'='*80}")
     print(f"Configuration:")
     print(f"  Model: {args.model}")
+    print(f"  Model cache dir: {args.model_cache_dir}")
     print(f"  ImageNet path: {args.imagenet_path}")
     print(f"  Evaluation type: {args.eval_type}")
     print(f"  Max images: {args.max_images}")
@@ -280,7 +290,8 @@ Examples:
             imagenet_path=args.imagenet_path,
             device_preference=args.device,
             layer_mode=args.layer_mode,
-            enhanced_cam_method=args.enhanced_cam_method
+            enhanced_cam_method=args.enhanced_cam_method,
+            model_cache_dir=args.model_cache_dir
         )
         if args.eval_type == 'enhanced-only':
             enhanced_results = suite.evaluate_enhanced_cam(

@@ -39,7 +39,8 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                  imagenet_path: str,
                  device_preference: str = "auto",
                  layer_mode: str = "last",
-                 enhanced_cam_method: str = "GradCAMEnhanced"):
+                 enhanced_cam_method: str = "GradCAMEnhanced",
+                 model_cache_dir: str = "../pytorch_models/"):
         """
         Initialize the ImageNet evaluator.
         
@@ -49,10 +50,12 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             device_preference: Device preference ("auto", "cuda", "mps", "cpu")
             layer_mode: Layer selection mode ("last", "last_5", "all")
             enhanced_cam_method: Enhanced CAM method to use
+            model_cache_dir: Directory containing pre-downloaded models (default: "../pytorch_models/")
         """
         # Don't call super().__init__() to avoid loading custom models
         # Instead, initialize only what we need from the base class
         self.model_name = model_name
+        self.model_cache_dir = model_cache_dir
         
         # Get device
         from XAI_Enhancer_module.utils.model_utils import get_device
@@ -69,8 +72,12 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         self.synset_to_idx = {synset: idx for idx, synset in enumerate(self.synset_mapping.keys())}
         self.idx_to_synset = {idx: synset for synset, idx in self.synset_to_idx.items()}
         
-        # Load pre-trained ImageNet model
-        self.model = self._load_pretrained_model(model_name)
+        # Initialize model loader with cache directory
+        from XAI_Enhancer_module.utils.model_loader import ModelLoader
+        self.model_loader = ModelLoader(model_cache_dir)
+        
+        # Load pre-trained ImageNet model using cached weights
+        self.model = self.model_loader.load_pretrained_model(model_name)
         self.model.eval()
         
         # Move model to device
@@ -91,12 +98,16 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         
         print(f"ImageNetProperAUCEvaluator initialized:")
         print(f"  Model: {model_name}")
+        print(f"  Model cache dir: {model_cache_dir}")
         print(f"  ImageNet path: {imagenet_path}")
         print(f"  Device: {self.device}")
         print(f"  Layer mode: {layer_mode}")
         print(f"  Enhanced CAM method: {enhanced_cam_method}")
         print(f"  Number of classes: {len(self.synset_mapping)}")
         print(f"  Number of conv layers: {len(self.conv_layers)}")
+        
+        # Print cache status for verification
+        self.model_loader.print_cache_status()
     
     def compute_insertion_auc(self, image_tensor: torch.Tensor, 
                             saliency_map: np.ndarray, predicted_label: int,
@@ -313,41 +324,6 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         
         print(f"Loaded {len(synset_mapping)} ImageNet class mappings")
         return synset_mapping
-    
-    def _load_pretrained_model(self, model_name: str) -> torch.nn.Module:
-        """Load pre-trained ImageNet model"""
-        if model_name == 'resnet18':
-            model = models.resnet18(pretrained=True)
-        elif model_name == 'resnet34':
-            model = models.resnet34(pretrained=True)
-        elif model_name == 'resnet50':
-            model = models.resnet50(pretrained=True)
-        elif model_name == 'resnet101':
-            model = models.resnet101(pretrained=True)
-        elif model_name == 'resnet152':
-            model = models.resnet152(pretrained=True)
-        elif model_name == 'vgg16':
-            model = models.vgg16(pretrained=True)
-        elif model_name == 'vgg19':
-            model = models.vgg19(pretrained=True)
-        elif model_name == 'densenet121':
-            model = models.densenet121(pretrained=True)
-        elif model_name == 'densenet169':
-            model = models.densenet169(pretrained=True)
-        elif model_name == 'densenet201':
-            model = models.densenet201(pretrained=True)
-        elif model_name == 'mobilenet_v2':
-            model = models.mobilenet_v2(pretrained=True)
-        elif model_name == 'mobilenet_v3_large':
-            model = models.mobilenet_v3_large(pretrained=True)
-        elif model_name == 'efficientnet_b0':
-            model = models.efficientnet_b0(pretrained=True)
-        elif model_name == 'efficientnet_b4':
-            model = models.efficientnet_b4(pretrained=True)
-        else:
-            raise ValueError(f"Unsupported model: {model_name}")
-        
-        return model
     
     def _get_enhanced_cam_layers(self, layer_mode: str = "last") -> List[torch.nn.Module]:
         """Get conv layers for Enhanced CAM extraction based on the specified mode."""
