@@ -59,7 +59,8 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         
         # Get device
         from XAI_Enhancer_module.utils.model_utils import get_device
-        self.device = get_device(device_preference)
+        device_val = get_device(device_preference)
+        self.device = torch.device(device_val) if isinstance(device_val, str) else device_val
         
         # Store ImageNet-specific parameters
         self.imagenet_path = imagenet_path
@@ -121,9 +122,11 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         import torch
         import numpy as np
         
-        # Ensure image tensor is on the correct device
+        # Ensure image tensor is 3D [C, H, W]
         image_tensor = image_tensor.to(self.device)
-        
+        if image_tensor.dim() == 4:
+            image_tensor = image_tensor.squeeze(0)
+            
         # Ensure saliency map is the right shape
         if len(saliency_map.shape) == 3:
             saliency_map = saliency_map[0]  # Take first channel if RGB
@@ -139,8 +142,6 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         confidences = []
         n_pixels = len(pixel_indices)
         
-        self.model.eval()
-        
         # Prepare for batch processing
         current_image = baseline_image.clone()
         original_flat = image_tensor.view(image_tensor.shape[0], -1)
@@ -150,9 +151,9 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         with torch.no_grad():
             if self.device.type == 'cuda':
                 with autocast():
-                    baseline_output = self.model(baseline_image)
+                    baseline_output = self.model(baseline_image.unsqueeze(0))
             else:
-                baseline_output = self.model(baseline_image)
+                baseline_output = self.model(baseline_image.unsqueeze(0))
                 
             baseline_confidence = torch.softmax(baseline_output, dim=1)[0, predicted_label].item()
             confidences.append(baseline_confidence)
@@ -165,7 +166,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                 if not batch_list:
                     return []
                 
-                batch_tensor = torch.cat(batch_list, dim=0)
+                batch_tensor = torch.stack(batch_list)
                 
                 if self.device.type == 'cuda':
                     with autocast():
@@ -183,7 +184,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                 # We need to efficiently update the pixels
                 # Using numpy for indexing is faster for CPU but we are on GPU tensors
                 # Let's collect indices for this step
-                step_indices = pixel_indices[i:end_idx]
+                step_indices = pixel_indices[i:end_idx].copy()
                 
                 # Update current_flat with original pixels at these indices
                 # Note: current_flat is a view of current_image, so modification is in-place
@@ -217,9 +218,11 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         import torch
         import numpy as np
         
-        # Ensure image tensor is on the correct device
+        # Ensure image tensor is 3D [C, H, W]
         image_tensor = image_tensor.to(self.device)
-        
+        if image_tensor.dim() == 4:
+            image_tensor = image_tensor.squeeze(0)
+            
         # Ensure saliency map is the right shape
         if len(saliency_map.shape) == 3:
             saliency_map = saliency_map[0]  # Take first channel if RGB
@@ -244,9 +247,9 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             # Initial confidence with original image
             if self.device.type == 'cuda':
                 with autocast():
-                    original_output = self.model(current_image)
+                    original_output = self.model(current_image.unsqueeze(0))
             else:
-                original_output = self.model(current_image)
+                original_output = self.model(current_image.unsqueeze(0))
                 
             original_confidence = torch.softmax(original_output, dim=1)[0, predicted_label].item()
             confidences.append(original_confidence)
@@ -259,7 +262,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                 if not batch_list:
                     return []
                 
-                batch_tensor = torch.cat(batch_list, dim=0)
+                batch_tensor = torch.stack(batch_list)
                 
                 if self.device.type == 'cuda':
                     with autocast():
@@ -275,7 +278,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                 end_idx = min(i + step_size, n_pixels)
                 
                 # Get indices for this step
-                step_indices = pixel_indices[i:end_idx]
+                step_indices = pixel_indices[i:end_idx].copy()
                 
                 # Set pixels to 0 (remove)
                 current_flat[:, step_indices] = 0
