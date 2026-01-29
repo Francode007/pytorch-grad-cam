@@ -50,7 +50,7 @@ class ModularXAIEvaluationSuite:
         print(f"  Enhanced CAM method: {enhanced_cam_method}")
     
     def evaluate_enhanced_cam(self, max_images: int = 2, step_size: int = 50, 
-                            verbose: bool = None) -> Dict:
+                            verbose: bool = None, batch_size: int = 64) -> Dict:
         """
         Evaluate Enhanced CAM method.
         
@@ -59,6 +59,7 @@ class ModularXAIEvaluationSuite:
             step_size: Step size for evaluation
             verbose: If None, auto-determine based on max_images. 
                     If True/False, override auto-detection.
+            batch_size: Batch size for evaluation inference
         
         Returns:
             Dictionary with evaluation results
@@ -74,7 +75,8 @@ class ModularXAIEvaluationSuite:
         results = self.enhanced_evaluator.evaluate_enhanced_cam(
             max_images=max_images, 
             step_size=step_size,
-            verbose=verbose
+            verbose=verbose,
+            batch_size=batch_size
         )
         
         self._print_results("Enhanced CAM", results)
@@ -82,7 +84,8 @@ class ModularXAIEvaluationSuite:
     
     def evaluate_standard_methods(self, methods: List[str] = None, max_images: int = 2,
                                 base_csv_dir: str = "./csv_exports",
-                                base_analysis_dir: str = "./analysis_results") -> Dict:
+                                base_analysis_dir: str = "./analysis_results",
+                                batch_size: int = 64) -> Dict:
         """Evaluate standard CAM methods and save results."""
         if methods is None:
             methods = ["GradCAM", "GradCAM++", "EigenCAM", "HiResCAM", "LayerCAM", "ScoreCAM"]
@@ -97,7 +100,8 @@ class ModularXAIEvaluationSuite:
             
             method_results = self.enhanced_evaluator.evaluate_method(
                 cam_method_name=method,
-                max_images=max_images
+                max_images=max_images,
+                batch_size=batch_size
             )
             
             results[method] = method_results
@@ -249,6 +253,9 @@ Examples:
     parser.add_argument('--step-size', type=int, default=224,
                        help='Step size for insertion/deletion evaluation')
     
+    parser.add_argument('--batch-size', type=int, default=64,
+                       help='Batch size for evaluation inference')
+    
     parser.add_argument('--methods', nargs='+', 
                        default=['GradCAM', 'GradCAM++', 'EigenCAM', 'HiResCAM', 'LayerCAM', 'ScoreCAM'],
                        choices=['GradCAM', 'GradCAM++', 'EigenGradCAM', 'EigenCAM', 'HiResCAM', 'LayerCAM', 'ScoreCAM'],
@@ -302,6 +309,7 @@ Examples:
     print(f"  Evaluation type: {args.eval_type}")
     print(f"  Max images: {args.max_images}")
     print(f"  Step size: {args.step_size}")
+    print(f"  Batch size: {args.batch_size}")
     print(f"  Device: {args.device}")
     print(f"  Layer mode: {args.layer_mode}")
     if verbose is not None:
@@ -321,7 +329,7 @@ Examples:
         if args.eval_type == 'enhanced-only':
             # Evaluate Enhanced CAM only
             enhanced_results = suite.evaluate_enhanced_cam(
-                args.max_images, args.step_size, verbose
+                args.max_images, args.step_size, verbose, args.batch_size
             )
             
         elif args.eval_type == 'standard-only':
@@ -330,7 +338,8 @@ Examples:
                 methods=args.methods, 
                 max_images=args.max_images,
                 base_csv_dir=args.output_csv_dir,
-                base_analysis_dir=args.output_analysis_dir
+                base_analysis_dir=args.output_analysis_dir,
+                batch_size=args.batch_size
             )
             
         elif args.eval_type == 'comparison':

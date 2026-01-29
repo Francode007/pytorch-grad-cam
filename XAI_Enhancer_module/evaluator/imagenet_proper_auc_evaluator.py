@@ -111,12 +111,13 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
     
     def compute_insertion_auc(self, image_tensor: torch.Tensor, 
                             saliency_map: np.ndarray, predicted_label: int,
-                            step_size: int = 50) -> Tuple[List[float], float]:
+                            step_size: int = 50, batch_size: int = 64) -> Tuple[List[float], float]:
         """
         Compute insertion AUC by progressively adding pixels in order of importance.
-        This method is adapted from the base ProperAUCEvaluator.
+        Optimized with batch processing and AMP.
         """
         # Import necessary functions
+        from torch.cuda.amp import autocast
         import torch
         import numpy as np
         
@@ -139,28 +140,66 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         n_pixels = len(pixel_indices)
         
         self.model.eval()
+        
+        # Prepare for batch processing
+        current_image = baseline_image.clone()
+        original_flat = image_tensor.view(image_tensor.shape[0], -1)
+        current_flat = current_image.view(current_image.shape[0], -1)
+        
+        # Pre-calculate baseline confidence
         with torch.no_grad():
-            # Initial confidence with baseline
-            baseline_output = self.model(baseline_image)
+            if self.device.type == 'cuda':
+                with autocast():
+                    baseline_output = self.model(baseline_image)
+            else:
+                baseline_output = self.model(baseline_image)
+                
             baseline_confidence = torch.softmax(baseline_output, dim=1)[0, predicted_label].item()
             confidences.append(baseline_confidence)
             
-            # Create modified image for insertion
-            modified_image = baseline_image.clone()
-            original_flat = image_tensor.view(image_tensor.shape[0], -1)
-            modified_flat = modified_image.view(modified_image.shape[0], -1)
+            # Create batches of modified images
+            modified_images_batch = []
             
-            for i in range(0, n_pixels, step_size):
-                # Add pixels in order of importance
-                end_idx = min(i + step_size, n_pixels)
-                for j in range(i, end_idx):
-                    pixel_idx = pixel_indices[j]
-                    modified_flat[:, pixel_idx] = original_flat[:, pixel_idx]
+            # Helper to process a batch
+            def process_batch(batch_list):
+                if not batch_list:
+                    return []
                 
-                # Get model confidence
-                output = self.model(modified_image)
-                confidence = torch.softmax(output, dim=1)[0, predicted_label].item()
-                confidences.append(confidence)
+                batch_tensor = torch.cat(batch_list, dim=0)
+                
+                if self.device.type == 'cuda':
+                    with autocast():
+                        outputs = self.model(batch_tensor)
+                else:
+                    outputs = self.model(batch_tensor)
+                    
+                batch_confidences = torch.softmax(outputs, dim=1)[:, predicted_label].tolist()
+                return batch_confidences
+
+            for i in range(0, n_pixels, step_size):
+                # Update the CURRENT image state for this step
+                end_idx = min(i + step_size, n_pixels)
+                
+                # We need to efficiently update the pixels
+                # Using numpy for indexing is faster for CPU but we are on GPU tensors
+                # Let's collect indices for this step
+                step_indices = pixel_indices[i:end_idx]
+                
+                # Update current_flat with original pixels at these indices
+                # Note: current_flat is a view of current_image, so modification is in-place
+                current_flat[:, step_indices] = original_flat[:, step_indices]
+                
+                # Add a copy of the current state to the batch
+                modified_images_batch.append(current_image.clone())
+                
+                # If batch is full, process it
+                if len(modified_images_batch) >= batch_size:
+                    confidences.extend(process_batch(modified_images_batch))
+                    modified_images_batch = []
+            
+            # Process remaining items in batch
+            if modified_images_batch:
+                confidences.extend(process_batch(modified_images_batch))
         
         # Calculate AUC
         auc = float(np.trapz(confidences)) / len(confidences)
@@ -168,12 +207,13 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
     
     def compute_deletion_auc(self, image_tensor: torch.Tensor, 
                            saliency_map: np.ndarray, predicted_label: int,
-                           step_size: int = 50) -> Tuple[List[float], float]:
+                           step_size: int = 50, batch_size: int = 64) -> Tuple[List[float], float]:
         """
         Compute deletion AUC by progressively removing pixels in order of importance.
-        This method is adapted from the base ProperAUCEvaluator.
+        Optimized with batch processing and AMP.
         """
         # Import necessary functions
+        from torch.cuda.amp import autocast
         import torch
         import numpy as np
         
@@ -189,33 +229,68 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         pixel_indices = np.argsort(flat_saliency)[::-1]  # Descending order
         
         # Start with original image on the correct device
-        modified_image = image_tensor.clone().to(self.device)
+        current_image = image_tensor.clone().to(self.device)
         
         # Progressively remove pixels and measure confidence
         confidences = []
         n_pixels = len(pixel_indices)
         
         self.model.eval()
+        
+        # Prepare for batch processing
+        current_flat = current_image.view(current_image.shape[0], -1)
+        
         with torch.no_grad():
             # Initial confidence with original image
-            original_output = self.model(modified_image)
+            if self.device.type == 'cuda':
+                with autocast():
+                    original_output = self.model(current_image)
+            else:
+                original_output = self.model(current_image)
+                
             original_confidence = torch.softmax(original_output, dim=1)[0, predicted_label].item()
             confidences.append(original_confidence)
             
-            # Create flattened view for easier manipulation
-            modified_flat = modified_image.view(modified_image.shape[0], -1)
+            # Create batches of modified images
+            modified_images_batch = []
+            
+            # Helper to process a batch
+            def process_batch(batch_list):
+                if not batch_list:
+                    return []
+                
+                batch_tensor = torch.cat(batch_list, dim=0)
+                
+                if self.device.type == 'cuda':
+                    with autocast():
+                        outputs = self.model(batch_tensor)
+                else:
+                    outputs = self.model(batch_tensor)
+                    
+                batch_confidences = torch.softmax(outputs, dim=1)[:, predicted_label].tolist()
+                return batch_confidences
             
             for i in range(0, n_pixels, step_size):
                 # Remove pixels in order of importance (set to 0)
                 end_idx = min(i + step_size, n_pixels)
-                for j in range(i, end_idx):
-                    pixel_idx = pixel_indices[j]
-                    modified_flat[:, pixel_idx] = 0
                 
-                # Get model confidence
-                output = self.model(modified_image)
-                confidence = torch.softmax(output, dim=1)[0, predicted_label].item()
-                confidences.append(confidence)
+                # Get indices for this step
+                step_indices = pixel_indices[i:end_idx]
+                
+                # Set pixels to 0 (remove)
+                current_flat[:, step_indices] = 0
+                
+                # Add a copy of the current state to the batch
+                modified_images_batch.append(current_image.clone())
+                
+                # If batch is full, process it
+                if len(modified_images_batch) >= batch_size:
+                    confidences.extend(process_batch(modified_images_batch))
+                    modified_images_batch = []
+            
+            # Process remaining items in batch
+            if modified_images_batch:
+                confidences.extend(process_batch(modified_images_batch))
         
         # Calculate AUC
         auc = float(np.trapz(confidences)) / len(confidences)
@@ -227,6 +302,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         Evaluate ROAD (Remove and Debias) score.
         This method is adapted from the base ProperAUCEvaluator.
         """
+        from torch.cuda.amp import autocast
         import torch
         import numpy as np
         
@@ -253,8 +329,13 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         # Get confidence drop
         self.model.eval()
         with torch.no_grad():
-            original_output = self.model(image_tensor)
-            modified_output = self.model(modified_image)
+            if self.device.type == 'cuda':
+                with autocast():
+                    original_output = self.model(image_tensor)
+                    modified_output = self.model(modified_image)
+            else:
+                original_output = self.model(image_tensor)
+                modified_output = self.model(modified_image)
             
             original_conf = torch.softmax(original_output, dim=1)[0, predicted_label].item()
             modified_conf = torch.softmax(modified_output, dim=1)[0, predicted_label].item()
@@ -264,7 +345,8 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         return max(0, road_score)  # Ensure non-negative
     
     def _evaluate_saliency_map(self, image_tensor: torch.Tensor, saliency_map: np.ndarray, 
-                              predicted_label: int, step_size: int = 50, verbose: bool = False) -> Tuple[float, float, float]:
+                              predicted_label: int, step_size: int = 50, verbose: bool = False, 
+                              batch_size: int = 64) -> Tuple[float, float, float]:
         """
         Evaluate a single saliency map using insertion AUC, deletion AUC, and ROAD metrics.
         
@@ -274,6 +356,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             predicted_label: Predicted class label
             step_size: Step size for evaluation
             verbose: Whether to print detailed results
+            batch_size: Batch size for evaluation inference
             
         Returns:
             Tuple of (insertion_auc, deletion_auc, road_score)
@@ -281,12 +364,12 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         try:
             # Compute insertion AUC
             _, insertion_auc = self.compute_insertion_auc(
-                image_tensor, saliency_map, predicted_label, step_size
+                image_tensor, saliency_map, predicted_label, step_size, batch_size
             )
             
             # Compute deletion AUC  
             _, deletion_auc = self.compute_deletion_auc(
-                image_tensor, saliency_map, predicted_label, step_size
+                image_tensor, saliency_map, predicted_label, step_size, batch_size
             )
             
             # Compute ROAD score
@@ -303,6 +386,8 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             
         except Exception as e:
             print(f"        Error in saliency evaluation: {e}")
+            import traceback
+            traceback.print_exc()
             return 0.0, 0.0, 0.0
     
     def _load_synset_mapping(self) -> Dict[str, str]:
@@ -495,7 +580,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
     def evaluate_enhanced_cam(self, max_images: int = 50, step_size: int = 50, 
                             verbose: bool = True, classes_filter: List[str] = None,
                             start_index: int = 0, end_index: int = None,
-                            return_raw_data: bool = False) -> Dict[str, any]:
+                            return_raw_data: bool = False, batch_size: int = 64) -> Dict[str, any]:
         """
         Evaluate Enhanced CAM method on ImageNet with proper AUC calculations.
         
@@ -504,6 +589,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             step_size: Step size for insertion/deletion evaluation
             verbose: If True, show detailed logging for each image
             classes_filter: List of ImageNet class names to filter
+            batch_size: Batch size for evaluation inference
         
         Returns:
             Dictionary with evaluation results
@@ -522,7 +608,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             verbose = False
         
         print(f"\nEvaluating Enhanced CAM on {len(image_paths)} ImageNet images...")
-        print(f"Using step_size={step_size} for proper evaluation...")
+        print(f"Using step_size={step_size} and batch_size={batch_size} for proper evaluation...")
         if not verbose:
             print(f"Verbose mode OFF - only showing progress and summary.")
         
@@ -549,7 +635,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                 
                 # Evaluate saliency map using base class methods
                 insertion_auc, deletion_auc, road_score = self._evaluate_saliency_map(
-                    image_tensor, saliency_map, predicted_label, step_size, verbose
+                    image_tensor, saliency_map, predicted_label, step_size, verbose, batch_size
                 )
                 
                 insertion_aucs.append(insertion_auc)
@@ -589,7 +675,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
     def evaluate_method(self, cam_method_name: str, max_images: int = 50, 
                        classes_filter: List[str] = None,
                        start_index: int = 0, end_index: int = None,
-                       return_raw_data: bool = False) -> Dict[str, any]:
+                       return_raw_data: bool = False, batch_size: int = 64) -> Dict[str, any]:
         """
         Evaluate a standard CAM method on ImageNet.
         
@@ -597,10 +683,12 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             cam_method_name: Name of the CAM method
             max_images: Maximum number of images to evaluate
             classes_filter: List of ImageNet class names to filter
+            batch_size: Batch size for evaluation inference
             
         Returns:
             Dictionary with evaluation results
         """
+
         # Get ImageNet images and predictions
         image_paths, predicted_labels, class_names = self.get_imagenet_images(
             max_images=max_images, 
@@ -632,7 +720,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                 
                 # Evaluate saliency map
                 insertion_auc, deletion_auc, road_score = self._evaluate_saliency_map(
-                    image_tensor, saliency_map, predicted_label, step_size=50, verbose=False
+                    image_tensor, saliency_map, predicted_label, step_size=50, verbose=False, batch_size=batch_size
                 )
                 
                 insertion_aucs.append(insertion_auc)

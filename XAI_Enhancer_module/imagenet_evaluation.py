@@ -55,7 +55,8 @@ class ImageNetXAIEvaluationSuite:
                             verbose: bool = None, classes_filter: List[str] = None,
                             start_index: int = 0, end_index: int = None,
                             save_intermediate: bool = False,
-                            output_dir: str = ".") -> Dict:
+                            output_dir: str = ".",
+                            batch_size: int = 64) -> Dict:
         print(f"\n{'='*60}")
         print("EVALUATING ENHANCED CAM ON IMAGENET")
         print(f"{'='*60}")
@@ -68,7 +69,8 @@ class ImageNetXAIEvaluationSuite:
             classes_filter=classes_filter,
             start_index=start_index,
             end_index=end_index,
-            return_raw_data=save_intermediate
+            return_raw_data=save_intermediate,
+            batch_size=batch_size
         )
         self._print_results("Enhanced CAM", results)
         
@@ -105,7 +107,8 @@ class ImageNetXAIEvaluationSuite:
                                 base_analysis_dir: str = "./analysis_results",
                                 classes_filter: List[str] = None,
                                 start_index: int = 0, end_index: int = None,
-                                save_intermediate: bool = False) -> Dict:
+                                save_intermediate: bool = False,
+                                batch_size: int = 64) -> Dict:
         if methods is None:
             methods = ["GradCAM", "GradCAM++", "EigenCAM", "HiResCAM", "LayerCAM", "ScoreCAM"]
         results = {}
@@ -120,7 +123,8 @@ class ImageNetXAIEvaluationSuite:
                 classes_filter=classes_filter,
                 start_index=start_index,
                 end_index=end_index,
-                return_raw_data=save_intermediate
+                return_raw_data=save_intermediate,
+                batch_size=batch_size
             )
             results[method] = method_results
             self._print_results(method, method_results)
@@ -341,6 +345,8 @@ Note: Models will be loaded from --model-cache-dir (default: /Users/f0s03xp/pyto
                        help='Maximum images per class for class-specific evaluation')
     parser.add_argument('--step-size', type=int, default=50,
                        help='Step size for insertion/deletion evaluation')
+    parser.add_argument('--batch-size', type=int, default=64,
+                       help='Batch size for evaluation (default: 64)')
     parser.add_argument('--methods', nargs='+', 
                        default=['GradCAM', 'GradCAM++', 'EigenCAM', 'HiResCAM', 'LayerCAM', 'ScoreCAM'],
                        choices=['GradCAM', 'GradCAM++', 'EigenGradCAM', 'EigenCAM', 'HiResCAM', 'LayerCAM', 'ScoreCAM'],
@@ -443,6 +449,7 @@ Note: Models will be loaded from --model-cache-dir (default: /Users/f0s03xp/pyto
     print(f"  Evaluation type: {args.eval_type}")
     print(f"  Max images: {args.max_images}")
     print(f"  Step size: {args.step_size}")
+    print(f"  Batch size: {args.batch_size}")
     print(f"  Device: {args.device}")
     print(f"  Layer mode: {args.layer_mode}")
     if args.classes:
@@ -469,7 +476,8 @@ Note: Models will be loaded from --model-cache-dir (default: /Users/f0s03xp/pyto
                 start_index=args.start_index,
                 end_index=args.end_index,
                 save_intermediate=args.save_intermediate,
-                output_dir=args.output_analysis_dir
+                output_dir=args.output_analysis_dir,
+                batch_size=args.batch_size
             )
             
             if args.email_to:
@@ -489,7 +497,8 @@ Note: Models will be loaded from --model-cache-dir (default: /Users/f0s03xp/pyto
                 classes_filter=args.classes,
                 start_index=args.start_index,
                 end_index=args.end_index,
-                save_intermediate=args.save_intermediate
+                save_intermediate=args.save_intermediate,
+                batch_size=args.batch_size
             )
             if args.email_to:
                 subject = f"ImageNet Batch {args.start_index}-{args.end_index}: Standard Methods"
