@@ -357,13 +357,16 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         
         return selected_layers
     
-    def get_imagenet_images(self, max_images: int = 50, classes_filter: List[str] = None) -> Tuple[List[str], List[int], List[str]]:
+    def get_imagenet_images(self, max_images: int = 50, classes_filter: List[str] = None,
+                          start_index: int = 0, end_index: int = None) -> Tuple[List[str], List[int], List[str]]:
         """
-        Get ImageNet validation images with proper class filtering.
+        Get ImageNet validation images with proper class filtering and batch support.
         
         Args:
-            max_images: Maximum number of images to get
+            max_images: Maximum number of images to get (ignored if end_index is set)
             classes_filter: List of class names to filter (e.g., ['tench', 'goldfish'])
+            start_index: Index to start collecting images from (for batch processing)
+            end_index: Index to stop collecting images at (for batch processing)
             
         Returns:
             Tuple of (image_paths, predicted_labels, class_names)
@@ -400,8 +403,8 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                 print(f"Warning: Directory not found for synset {synset}: {synset_dir}")
                 continue
             
-            # Get images from this synset
-            synset_images = glob.glob(os.path.join(synset_dir, "*.JPEG"))
+            # Get images from this synset and SORT them for determinism
+            synset_images = sorted(glob.glob(os.path.join(synset_dir, "*.JPEG")))
             if not synset_images:
                 print(f"Warning: No JPEG images found in {synset_dir}")
                 continue
@@ -416,10 +419,20 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             if max_images > 0 and len(all_image_paths) >= max_images:
                 break
         
-        # Limit total images if specified
-        if max_images > 0 and len(all_image_paths) > max_images:
+        # Limit total images if specified (legacy behavior if start/end not used)
+        if end_index is not None:
+            # Batch mode
+            print(f"Batch mode: selecting images from index {start_index} to {end_index}")
+            all_image_paths = all_image_paths[start_index:end_index]
+            all_class_names = all_class_names[start_index:end_index]
+        elif max_images > 0 and len(all_image_paths) > max_images:
+            # Legacy max_images mode
             all_image_paths = all_image_paths[:max_images]
             all_class_names = all_class_names[:max_images]
+        elif start_index > 0:
+            # Start index only
+            all_image_paths = all_image_paths[start_index:]
+            all_class_names = all_class_names[start_index:]
         
         # Get predicted labels using the model
         predicted_labels = self._predict_batch(all_image_paths)
@@ -480,7 +493,9 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         return image_tensor, saliency_map
     
     def evaluate_enhanced_cam(self, max_images: int = 50, step_size: int = 50, 
-                            verbose: bool = True, classes_filter: List[str] = None) -> Dict[str, any]:
+                            verbose: bool = True, classes_filter: List[str] = None,
+                            start_index: int = 0, end_index: int = None,
+                            return_raw_data: bool = False) -> Dict[str, any]:
         """
         Evaluate Enhanced CAM method on ImageNet with proper AUC calculations.
         
@@ -496,7 +511,9 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         # Get ImageNet images and predictions
         image_paths, predicted_labels, class_names = self.get_imagenet_images(
             max_images=max_images, 
-            classes_filter=classes_filter
+            classes_filter=classes_filter,
+            start_index=start_index,
+            end_index=end_index
         )
         
         # Auto-adjust verbosity for large datasets
@@ -560,10 +577,19 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             'classes_evaluated': classes_filter if classes_filter else 'All ImageNet classes'
         }
         
+        if return_raw_data:
+            results.update({
+                'insertion_aucs': insertion_aucs,
+                'deletion_aucs': deletion_aucs,
+                'road_scores': road_scores
+            })
+            
         return results
     
     def evaluate_method(self, cam_method_name: str, max_images: int = 50, 
-                       classes_filter: List[str] = None) -> Dict[str, any]:
+                       classes_filter: List[str] = None,
+                       start_index: int = 0, end_index: int = None,
+                       return_raw_data: bool = False) -> Dict[str, any]:
         """
         Evaluate a standard CAM method on ImageNet.
         
@@ -578,7 +604,9 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         # Get ImageNet images and predictions
         image_paths, predicted_labels, class_names = self.get_imagenet_images(
             max_images=max_images, 
-            classes_filter=classes_filter
+            classes_filter=classes_filter,
+            start_index=start_index,
+            end_index=end_index
         )
         
         print(f"\nEvaluating {cam_method_name} on {len(image_paths)} ImageNet images...")
@@ -627,6 +655,13 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             'classes_evaluated': classes_filter if classes_filter else 'All ImageNet classes'
         }
         
+        if return_raw_data:
+            results.update({
+                'insertion_aucs': insertion_aucs,
+                'deletion_aucs': deletion_aucs,
+                'road_scores': road_scores
+            })
+
         return results
     
     def _extract_standard_cam(self, image_path: str, predicted_label: int, cam_method_name: str) -> np.ndarray:

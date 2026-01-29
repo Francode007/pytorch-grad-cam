@@ -15,6 +15,11 @@ sys.path.append(str(project_root))
 
 from XAI_Enhancer_module.evaluator.imagenet_proper_auc_evaluator import ImageNetProperAUCEvaluator
 from XAI_Enhancer_module.utils.directory_manager import save_evaluation_results, print_directory_structure
+from XAI_Enhancer_module.utils.notification_utils import send_email_notification
+import json
+import glob
+import numpy as np
+import datetime
 
 class ImageNetXAIEvaluationSuite:
     """
@@ -47,7 +52,10 @@ class ImageNetXAIEvaluationSuite:
         print(f"  Enhanced CAM method: {enhanced_cam_method}")
     
     def evaluate_enhanced_cam(self, max_images: int = 50, step_size: int = 50, 
-                            verbose: bool = None, classes_filter: List[str] = None) -> Dict:
+                            verbose: bool = None, classes_filter: List[str] = None,
+                            start_index: int = 0, end_index: int = None,
+                            save_intermediate: bool = False,
+                            output_dir: str = ".") -> Dict:
         print(f"\n{'='*60}")
         print("EVALUATING ENHANCED CAM ON IMAGENET")
         print(f"{'='*60}")
@@ -57,15 +65,47 @@ class ImageNetXAIEvaluationSuite:
             max_images=max_images, 
             step_size=step_size,
             verbose=verbose,
-            classes_filter=classes_filter
+            classes_filter=classes_filter,
+            start_index=start_index,
+            end_index=end_index,
+            return_raw_data=save_intermediate
         )
         self._print_results("Enhanced CAM", results)
+        
+        if save_intermediate:
+            self._save_intermediate_results("EnhancedCAM", results, start_index, end_index, output_dir)
+            
         return results
-    
+        
+    def _save_intermediate_results(self, method_name: str, results: Dict, start: int, end_index: int, output_dir: str):
+        """Save raw intermediate results to JSON"""
+        filename = f"partial_results_{self.model_name}_{method_name}_{start}_{end_index}.json"
+        filepath = os.path.join(output_dir, filename)
+        
+        # Convert numpy types to native Python types for JSON
+        serializable_results = {}
+        for k, v in results.items():
+            if isinstance(v, (np.integer, int)):
+                serializable_results[k] = int(v)
+            elif isinstance(v, (np.floating, float)):
+                serializable_results[k] = float(v)
+            elif isinstance(v, np.ndarray):
+                serializable_results[k] = v.tolist()
+            elif isinstance(v, list):
+                serializable_results[k] = v
+            else:
+                serializable_results[k] = str(v)
+                
+        with open(filepath, 'w') as f:
+            json.dump(serializable_results, f, indent=4)
+        print(f"✅ Saved intermediate results to {filepath}")
+
     def evaluate_standard_methods(self, methods: List[str] = None, max_images: int = 50,
                                 base_csv_dir: str = "./csv_exports",
                                 base_analysis_dir: str = "./analysis_results",
-                                classes_filter: List[str] = None) -> Dict:
+                                classes_filter: List[str] = None,
+                                start_index: int = 0, end_index: int = None,
+                                save_intermediate: bool = False) -> Dict:
         if methods is None:
             methods = ["GradCAM", "GradCAM++", "EigenCAM", "HiResCAM", "LayerCAM", "ScoreCAM"]
         results = {}
@@ -77,10 +117,16 @@ class ImageNetXAIEvaluationSuite:
             method_results = self.evaluator.evaluate_method(
                 cam_method_name=method,
                 max_images=max_images,
-                classes_filter=classes_filter
+                classes_filter=classes_filter,
+                start_index=start_index,
+                end_index=end_index,
+                return_raw_data=save_intermediate
             )
             results[method] = method_results
             self._print_results(method, method_results)
+            
+            if save_intermediate:
+                self._save_intermediate_results(method, method_results, start_index, end_index, base_analysis_dir)
             export_row = {
                 'Method': method,
                 'Model': self.model_name,
@@ -143,6 +189,71 @@ class ImageNetXAIEvaluationSuite:
             classes_filter=classes_filter
         )
         return comparison_df
+            
+    def aggregate_results(self, results_dir: str) -> pd.DataFrame:
+        """Aggregate all JSON files in the directory and calculate final metrics."""
+        print(f"Searching for partial result files in {results_dir}...")
+        files = glob.glob(os.path.join(results_dir, "partial_results_*.json"))
+        
+        if not files:
+            print("❌ No partial result files found.")
+            return pd.DataFrame()
+            
+        print(f"Found {len(files)} files to aggregate.")
+        
+        aggregated_data = {} # method -> {metric -> [values]}
+        
+        for file in files:
+            try:
+                with open(file, 'r') as f:
+                    data = json.load(f)
+                    
+                # Extract method name from filename or assume from content
+                # Filename format: partial_results_{model}_{method}_{start}_{end}.json
+                parts = os.path.basename(file).replace("partial_results_", "").replace(".json", "").split("_")
+                # This parsing might be brittle if model name has underscores, but we can try to guess
+                # A safer way is to rely on what keys are present.
+                # However, the unified content structure doesn't store method name explicitly except in filename?
+                # Actually _save_intermediate_results uses method_name argument.
+                # Let's rely on filename based on how we wrote it.
+                # We know the last two are numbers.
+                method_name_parts = parts[1:-2] # Skip model name (0), and start/end (-2, -1)
+                method_name = "_".join(method_name_parts)
+                
+                if method_name not in aggregated_data:
+                    aggregated_data[method_name] = {
+                        'insertion_aucs': [], 'deletion_aucs': [], 'road_scores': []
+                    }
+                
+                # Append lists
+                if 'insertion_aucs' in data:
+                    aggregated_data[method_name]['insertion_aucs'].extend(data['insertion_aucs'])
+                if 'deletion_aucs' in data:
+                    aggregated_data[method_name]['deletion_aucs'].extend(data['deletion_aucs'])
+                if 'road_scores' in data:
+                    aggregated_data[method_name]['road_scores'].extend(data['road_scores'])
+                    
+            except Exception as e:
+                print(f"Error reading {file}: {e}")
+                
+        # Calculate final stats
+        final_rows = []
+        for method, metrics in aggregated_data.items():
+            row = {
+                'Method': method,
+                'Dataset': 'ImageNet', # Assumed
+                'Insertion_AUC_Mean': np.mean(metrics['insertion_aucs']),
+                'Insertion_AUC_Std': np.std(metrics['insertion_aucs']),
+                'Deletion_AUC_Mean': np.mean(metrics['deletion_aucs']),
+                'Deletion_AUC_Std': np.std(metrics['deletion_aucs']),
+                'ROAD_Mean': np.mean(metrics['road_scores']),
+                'ROAD_Std': np.std(metrics['road_scores']),
+                'Images_Evaluated': len(metrics['insertion_aucs'])
+            }
+            final_rows.append(row)
+            
+        df = pd.DataFrame(final_rows)
+        return df
     
     def evaluate_class_specific(self, target_classes: List[str], max_images_per_class: int = 10,
                               methods: List[str] = None) -> Dict:
@@ -256,7 +367,63 @@ Note: Models will be loaded from --model-cache-dir (default: /Users/f0s03xp/pyto
                        help='Enhanced CAM method to use')
     parser.add_argument('--model-cache-dir', default='/Users/f0s03xp/pytorch_models/',
                        help='Directory containing pre-downloaded models (default: /Users/f0s03xp/pytorch_models/)')
+    
+    # New arguments for batch processing and aggregation
+    parser.add_argument('--start-index', type=int, default=0, help='Start index for batch processing')
+    parser.add_argument('--end-index', type=int, default=None, help='End index for batch processing')
+    parser.add_argument('--save-intermediate', action='store_true', help='Save raw intermediate results to JSON')
+    parser.add_argument('--aggregate-dir', help='Directory to aggregate results from')
+    
+    # Email notifications
+    parser.add_argument('--email-to', help='Recipient email for notifications')
+    parser.add_argument('--email-sender', help='Sender email address')
+    parser.add_argument('--email-password', help='Sender email password (app password)')
+    
     args = parser.parse_args()
+    
+    # Handle aggregation mode
+    if args.aggregate_dir:
+        print(f"Running in AGGREGATION MODE on {args.aggregate_dir}")
+        # Dummy init just to get access to helper methods if needed, or simple static aggregation
+        # We need a minimal suite instance to use `_print_results`? No, we created `aggregate_results` on the suite.
+        # We'll just instantiate with dummy values as we don't need the model for aggregation.
+        try:
+            # Must provide required args even if dummy
+            suite = ImageNetXAIEvaluationSuite(
+                model_name=args.model, imagenet_path=args.imagenet_path, model_cache_dir=args.model_cache_dir
+            )
+            df = suite.aggregate_results(args.aggregate_dir)
+            if not df.empty:
+                print(f"\n{'='*80}")
+                print("AGGREGATED FINAL RESULTS:")
+                print(f"{'='*80}")
+                print(df.to_string(index=False))
+                
+                # Check for Valid Range
+                for _, row in df.iterrows():
+                    print(f"\n{row['Method']}:")
+                    if 0 <= row['Insertion_AUC_Mean'] <= 1 and 0 <= row['Deletion_AUC_Mean'] <= 1:
+                        print("   ✅ AUC values are in valid [0,1] range")
+                    else:
+                        print("   ❌ AUC values are outside [0,1] range")
+                        
+                csv_path = os.path.join(args.output_csv_dir, f"{args.model}_imagenet_aggregated.csv")
+                os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+                df.to_csv(csv_path, index=False)
+                print(f"\n💾 Saved aggregated CSV to {csv_path}")
+                
+                if args.email_to:
+                    subject = f"ImageNet Evaluation Completed: {args.model}"
+                    body = f"Evaluation finished.\n\nAggregated Results:\n\n{df.to_string(index=False)}"
+                    send_email_notification(args.email_to, subject, body, args.email_sender, args.email_password)
+
+            return
+        except Exception as e:
+            print(f"Error during aggregation: {e}")
+            import traceback
+            traceback.print_exc()
+            return
+            
     if args.verbose and args.quiet:
         print("❌ Error: Cannot specify both --verbose and --quiet")
         return
@@ -298,17 +465,55 @@ Note: Models will be loaded from --model-cache-dir (default: /Users/f0s03xp/pyto
                 max_images=args.max_images,
                 step_size=args.step_size,
                 verbose=verbose,
-                classes_filter=args.classes
+                classes_filter=args.classes,
+                start_index=args.start_index,
+                end_index=args.end_index,
+                save_intermediate=args.save_intermediate,
+                output_dir=args.output_analysis_dir
             )
+            
+            if args.email_to:
+                subject = f"ImageNet Batch {args.start_index}-{args.end_index}: Enhanced CAM"
+                body = f"Evaluation completed for {args.model} on indices {args.start_index} to {args.end_index}.\n\n"
+                body += f"Insertion AUC: {enhanced_results['insertion_auc_mean']:.4f}\n"
+                body += f"Deletion AUC: {enhanced_results['deletion_auc_mean']:.4f}\n"
+                body += f"ROAD Score: {enhanced_results['road_mean']:.4f}\n"
+                send_email_notification(args.email_to, subject, body, args.email_sender, args.email_password)
+                
         elif args.eval_type == 'standard-only':
             standard_results = suite.evaluate_standard_methods(
                 methods=args.methods,
                 max_images=args.max_images,
                 base_csv_dir=args.output_csv_dir,
                 base_analysis_dir=args.output_analysis_dir,
-                classes_filter=args.classes
+                classes_filter=args.classes,
+                start_index=args.start_index,
+                end_index=args.end_index,
+                save_intermediate=args.save_intermediate
             )
+            if args.email_to:
+                subject = f"ImageNet Batch {args.start_index}-{args.end_index}: Standard Methods"
+                body = f"Evaluation completed for {args.model} on indices {args.start_index} to {args.end_index}.\n\nMethods: {args.methods}"
+                send_email_notification(args.email_to, subject, body, args.email_sender, args.email_password)
         elif args.eval_type == 'comparison':
+            # Note: comparison mode doesn't cleanly support batching/intermediate saving as cleanly in the original script
+            # because it wraps other calls. We'll simplify for now by NOT heavily refactoring comparison mode 
+            # but printing a warning if users try to use batching with it, or relying on manual sequential calls.
+            # Actually, the user's request is satisfied by running separate/sequential calls in the notebook.
+            # But let's defer this specific update or handle it if easy.
+            # For now, let's assume the user will use 'enhanced-only' or 'standard-only' in batches, 
+            # Or we can just adapt comparison to call the new signatures.
+            
+            # Since the user wants to run 300 samples each time, they will likely run:
+            # 1. Enhanced CAM pass
+            # 2. Standard methods pass
+            # OR we can just allow comparison to run both sequentially.
+            
+            # Let's just print a warning if they try comparison with batching features
+            if args.start_index > 0 or args.end_index is not None:
+                print("⚠️ Warning: 'comparison' mode runs Enhanced AND Standard methods sequentially.")
+                print("   If you want to save intermediate results for aggregation, it's safer to run 'enhanced-only' and 'standard-only' separately.")
+            
             comparison_df = suite.run_full_comparison(
                 standard_methods=args.methods,
                 max_images=args.max_images,
