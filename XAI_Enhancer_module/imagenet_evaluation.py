@@ -215,27 +215,17 @@ class ImageNetXAIEvaluationSuite:
                 # Extract method name from filename or assume from content
                 # Filename format: partial_results_{model}_{method}_{start}_{end}.json
                 parts = os.path.basename(file).replace("partial_results_", "").replace(".json", "").split("_")
-                # This parsing might be brittle if model name has underscores, but we can try to guess
-                # A safer way is to rely on what keys are present.
-                # However, the unified content structure doesn't store method name explicitly except in filename?
-                # Actually _save_intermediate_results uses method_name argument.
-                # Let's rely on filename based on how we wrote it.
-                # We know the last two are numbers.
                 method_name_parts = parts[1:-2] # Skip model name (0), and start/end (-2, -1)
                 method_name = "_".join(method_name_parts)
                 
                 if method_name not in aggregated_data:
-                    aggregated_data[method_name] = {
-                        'insertion_aucs': [], 'deletion_aucs': [], 'road_scores': []
-                    }
+                    aggregated_data[method_name] = {}
                 
-                # Append lists
-                if 'insertion_aucs' in data:
-                    aggregated_data[method_name]['insertion_aucs'].extend(data['insertion_aucs'])
-                if 'deletion_aucs' in data:
-                    aggregated_data[method_name]['deletion_aucs'].extend(data['deletion_aucs'])
-                if 'road_scores' in data:
-                    aggregated_data[method_name]['road_scores'].extend(data['road_scores'])
+                # Append lists dynamically for all keys found in data
+                for key, values in data.items():
+                    if key not in aggregated_data[method_name]:
+                        aggregated_data[method_name][key] = []
+                    aggregated_data[method_name][key].extend(values)
                     
             except Exception as e:
                 print(f"Error reading {file}: {e}")
@@ -245,15 +235,16 @@ class ImageNetXAIEvaluationSuite:
         for method, metrics in aggregated_data.items():
             row = {
                 'Method': method,
-                'Dataset': 'ImageNet', # Assumed
-                'Insertion_AUC_Mean': np.mean(metrics['insertion_aucs']),
-                'Insertion_AUC_Std': np.std(metrics['insertion_aucs']),
-                'Deletion_AUC_Mean': np.mean(metrics['deletion_aucs']),
-                'Deletion_AUC_Std': np.std(metrics['deletion_aucs']),
-                'ROAD_Mean': np.mean(metrics['road_scores']),
-                'ROAD_Std': np.std(metrics['road_scores']),
-                'Images_Evaluated': len(metrics['insertion_aucs'])
+                'Dataset': 'ImageNet',
+                'Images_Evaluated': len(metrics['insertion_auc']) if 'insertion_auc' in metrics else 0
             }
+            
+            # Calculate mean/std for each metric type found
+            for metric_name, values in metrics.items():
+                if values:
+                    row[f"{metric_name}_Mean"] = np.mean(values)
+                    row[f"{metric_name}_Std"] = np.std(values)
+            
             final_rows.append(row)
             
         df = pd.DataFrame(final_rows)

@@ -133,7 +133,10 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         
         # Flatten saliency map and get pixel indices sorted by importance
         flat_saliency = saliency_map.flatten()
-        pixel_indices = np.argsort(flat_saliency)[::-1]  # Descending order
+        # pixel_indices = np.argsort(flat_saliency)[::-1]  # Descending order
+        # Use torch for indices to avoid host-device sync during loop
+        pixel_indices_np = np.argsort(flat_saliency)[::-1].copy()
+        pixel_indices = torch.from_numpy(pixel_indices_np).to(self.device).long()
         
         # Create baseline image (black) on the correct device
         baseline_image = torch.zeros_like(image_tensor, device=self.device)
@@ -184,7 +187,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                 # We need to efficiently update the pixels
                 # Using numpy for indexing is faster for CPU but we are on GPU tensors
                 # Let's collect indices for this step
-                step_indices = pixel_indices[i:end_idx].copy()
+                step_indices = pixel_indices[i:end_idx]
                 
                 # Update current_flat with original pixels at these indices
                 # Note: current_flat is a view of current_image, so modification is in-place
@@ -205,7 +208,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         # Calculate AUC
         auc = float(np.trapz(confidences)) / len(confidences)
         return confidences, auc
-    
+
     def compute_deletion_auc(self, image_tensor: torch.Tensor, 
                            saliency_map: np.ndarray, predicted_label: int,
                            step_size: int = 50, batch_size: int = 64) -> Tuple[List[float], float]:
@@ -229,7 +232,9 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         
         # Flatten saliency map and get pixel indices sorted by importance
         flat_saliency = saliency_map.flatten()
-        pixel_indices = np.argsort(flat_saliency)[::-1]  # Descending order
+        # pixel_indices = np.argsort(flat_saliency)[::-1]  # Descending order
+        pixel_indices_np = np.argsort(flat_saliency)[::-1].copy()
+        pixel_indices = torch.from_numpy(pixel_indices_np).to(self.device).long()
         
         # Start with original image on the correct device
         current_image = image_tensor.clone().to(self.device)
@@ -278,7 +283,8 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                 end_idx = min(i + step_size, n_pixels)
                 
                 # Get indices for this step
-                step_indices = pixel_indices[i:end_idx].copy()
+                step_indices = pixel_indices[i:end_idx]
+
                 
                 # Set pixels to 0 (remove)
                 current_flat[:, step_indices] = 0
@@ -300,98 +306,141 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         return confidences, auc
     
     def evaluate_road(self, image_tensor: torch.Tensor, 
-                     saliency_map: np.ndarray, predicted_label: int) -> float:
+                     saliency_map: np.ndarray, predicted_label: int,
+                     thresholds: List[int] = [20, 40, 60, 80],
+                     imputation: str = "blur") -> Dict[str, float]:
         """
-        Evaluate ROAD (Remove and Debias) score.
-        This method is adapted from the base ProperAUCEvaluator.
+        Evaluate ROAD (Remove and Debias) score at multiple thresholds.
+        
+        Args:
+            image_tensor: Input image tensor (C, H, W)
+            saliency_map: Saliency map (H, W) or (1, H, W)
+            predicted_label: Target class index
+            thresholds: List of percentile thresholds to remove (e.g., [20, 40] removes top 20% and 40%)
+            imputation: Imputation strategy ("blur", "black")
+            
+        Returns:
+            Dictionary mapping "road_{threshold}" to the score.
         """
         from torch.cuda.amp import autocast
         import torch
         import numpy as np
+        import torchvision.transforms.functional as TF
         
         # Ensure image tensor is on the correct device
-        image_tensor = image_tensor.to(self.device)
-        
-        # Simple ROAD implementation: remove top 10% most important pixels
+        image_tensor = image_tensor.to(self.device).clone()
+        if image_tensor.dim() == 4:
+            image_tensor = image_tensor.squeeze(0)
+            
+        # Ensure saliency map is correct shape
         if len(saliency_map.shape) == 3:
             saliency_map = saliency_map[0]
-        
+            
         flat_saliency = saliency_map.flatten()
-        threshold = np.percentile(flat_saliency, 90)  # Top 10%
         
-        # Create masked image
-        mask = (saliency_map > threshold)
-        modified_image = image_tensor.clone().to(self.device)
-        modified_flat = modified_image.view(modified_image.shape[0], -1)
-        mask_flat = mask.flatten()
+        # Prepare batch of modified images
+        # First element is the original image for baseline reference
+        batch_images = [image_tensor]
         
-        # Use tensor indexing instead of numpy boolean indexing
-        mask_indices = torch.where(torch.from_numpy(mask_flat))[0]
-        modified_flat[:, mask_indices] = 0
+        # Create imputation background
+        if imputation == "blur":
+            # Apply Gaussian blur
+            # Kernel size should be odd, e.g., 11x11, sigma 5.0
+            blurred_image = TF.gaussian_blur(image_tensor, kernel_size=11, sigma=5.0)
+            imputation_tensor = blurred_image
+        else: # "black" or default
+            imputation_tensor = torch.zeros_like(image_tensor)
+            
+        # Pre-calculate flattened views for efficient indexing
+        image_flat = image_tensor.view(image_tensor.shape[0], -1)
+        imputation_flat = imputation_tensor.view(imputation_tensor.shape[0], -1)
         
-        # Get confidence drop
+        for p in thresholds:
+            # Determine threshold value for top p% pixels
+            # e.g., p=20 means we remove pixels > 80th percentile
+            percentile_val = np.percentile(flat_saliency, 100 - p)
+            
+            mask = (saliency_map > percentile_val) # Pixels to remove
+            mask_flat = mask.flatten()
+            mask_indices = torch.where(torch.from_numpy(mask_flat).to(self.device))[0]
+            
+            # Create modified image
+            modified = image_tensor.clone()
+            modified_flat = modified.view(modified.shape[0], -1)
+            
+            # Replace important pixels with imputation values
+            modified_flat[:, mask_indices] = imputation_flat[:, mask_indices]
+            
+            batch_images.append(modified)
+            
+        # Process entire batch in one go
+        batch_tensor = torch.stack(batch_images)
+        
         self.model.eval()
         with torch.no_grad():
             if self.device.type == 'cuda':
                 with autocast():
-                    original_output = self.model(image_tensor)
-                    modified_output = self.model(modified_image)
+                    outputs = self.model(batch_tensor)
             else:
-                original_output = self.model(image_tensor)
-                modified_output = self.model(modified_image)
+                outputs = self.model(batch_tensor)
+                
+            probs = torch.softmax(outputs, dim=1)[:, predicted_label]
             
-            original_conf = torch.softmax(original_output, dim=1)[0, predicted_label].item()
-            modified_conf = torch.softmax(modified_output, dim=1)[0, predicted_label].item()
-            
-            road_score = original_conf - modified_conf
+        # Calculate scores
+        original_conf = probs[0].item()
+        results = {}
         
-        return max(0, road_score)  # Ensure non-negative
+        for i, p in enumerate(thresholds):
+            modified_conf = probs[i+1].item()
+            # ROAD score is the drop in confidence
+            # Ensure non-negative
+            diff = float(max(0.0, original_conf - modified_conf))
+            results[f"road_{p}"] = diff
+            
+        return results
     
     def _evaluate_saliency_map(self, image_tensor: torch.Tensor, saliency_map: np.ndarray, 
                               predicted_label: int, step_size: int = 50, verbose: bool = False, 
-                              batch_size: int = 64) -> Tuple[float, float, float]:
+                              batch_size: int = 64) -> Dict[str, float]:
         """
         Evaluate a single saliency map using insertion AUC, deletion AUC, and ROAD metrics.
-        
-        Args:
-            image_tensor: Preprocessed image tensor
-            saliency_map: Generated saliency map
-            predicted_label: Predicted class label
-            step_size: Step size for evaluation
-            verbose: Whether to print detailed results
-            batch_size: Batch size for evaluation inference
-            
-        Returns:
-            Tuple of (insertion_auc, deletion_auc, road_score)
+        Returns a dictionary of all metrics.
         """
         try:
+            results = {}
+            
             # Compute insertion AUC
             _, insertion_auc = self.compute_insertion_auc(
                 image_tensor, saliency_map, predicted_label, step_size, batch_size
             )
+            results['insertion_auc'] = insertion_auc
             
             # Compute deletion AUC  
             _, deletion_auc = self.compute_deletion_auc(
                 image_tensor, saliency_map, predicted_label, step_size, batch_size
             )
+            results['deletion_auc'] = deletion_auc
             
-            # Compute ROAD score
-            road_score = self.evaluate_road(
-                image_tensor, saliency_map, predicted_label
+            # Compute ROAD score (multi-threshold)
+            road_scores = self.evaluate_road(
+                image_tensor, saliency_map, predicted_label,
+                thresholds=[20, 40, 60, 80],
+                imputation="blur"
             )
+            results.update(road_scores)
             
             if verbose:
                 print(f"        Insertion AUC: {insertion_auc:.4f}")
                 print(f"        Deletion AUC: {deletion_auc:.4f}")
-                print(f"        ROAD Score: {road_score:.4f}")
+                print(f"        ROAD Scores: {road_scores}")
             
-            return insertion_auc, deletion_auc, road_score
+            return results
             
         except Exception as e:
             print(f"        Error in saliency evaluation: {e}")
             import traceback
             traceback.print_exc()
-            return 0.0, 0.0, 0.0
+            return {'insertion_auc': 0.0, 'deletion_auc': 0.0}
     
     def _load_synset_mapping(self) -> Dict[str, str]:
         """Load ImageNet synset mapping from LOC_synset_mapping.txt"""
