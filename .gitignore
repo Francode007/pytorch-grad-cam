@@ -6,3 +6,5 @@ dist
 /xai_env
 /.DS_Store
 /XAI_Enhancer_module/imagenet_val_sample
+*.png
+*.jpeg
