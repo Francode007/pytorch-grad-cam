@@ -24,11 +24,12 @@ def regression_test():
     STEP_SIZE = 224 # Faster evaluation
     
     # Initialize Evaluator
-    print("\n⏳ Initializing Evalutor (ResNet50)...")
+    print("\n⏳ Initializing Evalutor (ResNet50) - Layer Mode: ALL...")
     evaluator = ImageNetProperAUCEvaluator(
         model_name='resnet50',
         imagenet_path='/tmp', 
-        device_preference='auto'
+        device_preference='auto',
+        layer_mode='all' 
     )
     
     

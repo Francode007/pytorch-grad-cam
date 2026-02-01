@@ -686,18 +686,19 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                 image_tensor, saliency_map = self.extract_enhanced_cam(image_path, predicted_label)
                 
                 # Evaluate saliency map using base class methods
-                insertion_auc, deletion_auc, road_score = self._evaluate_saliency_map(
+                metrics = self._evaluate_saliency_map(
                     image_tensor, saliency_map, predicted_label, step_size, verbose, batch_size
                 )
                 
-                insertion_aucs.append(insertion_auc)
-                deletion_aucs.append(deletion_auc)
-                road_scores.append(road_score)
+                insertion_aucs.append(metrics['insertion_auc'])
+                deletion_aucs.append(metrics['deletion_auc'])
+                # Use road_20 as representative score for summary stats
+                road_scores.append(metrics.get('road_20', 0.0))
                 
                 if verbose:
-                    print(f"    Insertion AUC: {insertion_auc:.4f}")
-                    print(f"    Deletion AUC: {deletion_auc:.4f}")
-                    print(f"    ROAD Score: {road_score:.4f}")
+                    print(f"    Insertion AUC: {metrics['insertion_auc']:.4f}")
+                    print(f"    Deletion AUC: {metrics['deletion_auc']:.4f}")
+                    print(f"    ROAD Score (20%): {metrics.get('road_20', 0.0):.4f}")
                 
             except Exception as e:
                 print(f"Error processing {image_path}: {e}")
@@ -771,13 +772,13 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                 image_tensor = self.transform(image).unsqueeze(0).to(self.device)
                 
                 # Evaluate saliency map
-                insertion_auc, deletion_auc, road_score = self._evaluate_saliency_map(
+                metrics = self._evaluate_saliency_map(
                     image_tensor, saliency_map, predicted_label, step_size=50, verbose=False, batch_size=batch_size
                 )
                 
-                insertion_aucs.append(insertion_auc)
-                deletion_aucs.append(deletion_auc)
-                road_scores.append(road_score)
+                insertion_aucs.append(metrics['insertion_auc'])
+                deletion_aucs.append(metrics['deletion_auc'])
+                road_scores.append(metrics.get('road_20', 0.0))
                 
             except Exception as e:
                 print(f"Error processing {image_path}: {e}")

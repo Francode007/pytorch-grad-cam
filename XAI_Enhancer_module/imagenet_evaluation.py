@@ -20,6 +20,7 @@ import json
 import glob
 import numpy as np
 import datetime
+import os
 
 class ImageNetXAIEvaluationSuite:
     """

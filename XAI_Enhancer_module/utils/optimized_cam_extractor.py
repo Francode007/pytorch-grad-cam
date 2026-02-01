@@ -30,7 +30,8 @@ class OptimizedCamExtractor:
     """
     
     def __init__(self, model, model_name: str, conv_layers: List[nn.Module], 
-                 cam_method: str = "GradCAMEnhanced", device_preference: str = "auto"):
+                 cam_method: str = "GradCAMEnhanced", device_preference: str = "auto",
+                 layer_batch_size: int = 32):
         """
         Initialize the CAM extractor.
         
@@ -38,9 +39,9 @@ class OptimizedCamExtractor:
             model: The trained neural network model
             model_name: Name of the model (affects image size)
             conv_layers: List of convolutional layers for CAM computation
-            cam_method: Enhanced CAM method to use ("GradCAMEnhanced", "GradCAMPlusPlusEnhanced", 
-                       "HiResCAMEnhanced", "ScoreCAMEnhanced", "AblationCAMEnhanced")
+            cam_method: Enhanced CAM method to use
             device_preference: Device preference ("auto", "cuda", "mps", "cpu")
+            layer_batch_size: Batch size for simultaneous layer processing (Smart Batching)
         """
         self.model = model
         self.model_name = model_name
@@ -48,6 +49,7 @@ class OptimizedCamExtractor:
         self.device = get_device(device_preference)
         self.img_size = 384 if model_name.startswith("b4") else 224
         self.cam_method_name = cam_method
+        self.layer_batch_size = layer_batch_size
         
         # Initialize the specified enhanced CAM method
         enhanced_cam_methods = {
@@ -119,62 +121,73 @@ class OptimizedCamExtractor:
                                      input_tensor: torch.Tensor,
                                      modified_activations_per_layer: List[np.ndarray]) -> List[np.ndarray]:
         """
-        Efficiently compute modified outputs for all layers in batch.
-        
-        Args:
-            input_tensor: Original input tensor
-            modified_activations_per_layer: List of modified activations for each layer
-            
-        Returns:
-            List of modified outputs for each layer
+        Efficiently compute modified outputs for all layers using Smart Batching.
+        Instead of N separate passes, we run ceil(N/layer_batch_size) passes.
         """
-        modified_outputs = []
+        modified_outputs = [None] * len(self.conv_layers)
+        num_layers = len(self.conv_layers)
         
-        for layer_idx, (layer, modified_activation) in enumerate(zip(self.conv_layers, modified_activations_per_layer)):
-            # Register hook for this layer
-            hook_handle = None
+        # Ensure input is on device
+        input_tensor = input_tensor.to(self.device)
+        
+        # Process layers in batches
+        for i in range(0, num_layers, self.layer_batch_size):
+            batch_slice = slice(i, min(i + self.layer_batch_size, num_layers))
+            current_layers = self.conv_layers[batch_slice]
+            current_mod_activations = modified_activations_per_layer[batch_slice]
+            actual_batch_size = len(current_layers)
             
-            # Ensure the modified activation has the right shape
-            # The modified_activation should match the output shape of the layer
-            if isinstance(modified_activation, np.ndarray):
-                modified_activation_tensor = torch.from_numpy(modified_activation).to(self.device)
-            else:
-                modified_activation_tensor = modified_activation.to(self.device)
+            # Prepare batch input: duplicate the single image N times
+            batch_input = input_tensor.repeat(actual_batch_size, 1, 1, 1)
+            
+            hooks = []
+            
+            # Register hooks for this batch
+            for local_idx, (layer, mod_act) in enumerate(zip(current_layers, current_mod_activations)):
                 
-            # If the tensor has an extra batch dimension that we added, we need to remove it
-            # to match the expected layer output shape
-            if modified_activation_tensor.dim() == 5:
-                # Remove the extra dimension: (1, 1, C, H, W) -> (1, C, H, W)
-                modified_activation_tensor = modified_activation_tensor.squeeze(1)
-            elif modified_activation_tensor.dim() == 6:
-                # Remove extra dimensions: (1, 1, C, D, H, W) -> (1, C, D, H, W)  
-                modified_activation_tensor = modified_activation_tensor.squeeze(1)
+                # Prepare replacement tensor
+                if isinstance(mod_act, np.ndarray):
+                    mod_act_tensor = torch.from_numpy(mod_act).to(self.device)
+                else:
+                    mod_act_tensor = mod_act.to(self.device)
+                
+                if mod_act_tensor.dim() == 5:
+                    mod_act_tensor = mod_act_tensor.squeeze(1)
+                elif mod_act_tensor.dim() == 6:
+                    mod_act_tensor = mod_act_tensor.squeeze(1)
+
+                # Define Smart Hook
+                def create_hook(idx_in_batch, replacement):
+                    def hook_fn(module, input, output):
+                        # ONLY modify the batch element corresponding to this layer
+                        reshaped_replacement = replacement
+                        if replacement.shape != output[idx_in_batch].shape:
+                             try:
+                                 reshaped_replacement = replacement.view(output[idx_in_batch].shape)
+                             except:
+                                 # Fallback (should not happen if shapes match logic)
+                                 return output
+                        
+                        output[idx_in_batch] = reshaped_replacement
+                        return output
+                    return hook_fn
+
+                hooks.append(layer.register_forward_hook(create_hook(local_idx, mod_act_tensor)))
             
-            def create_hook(mod_act):
-                def hook_fn(module, input, output):
-                    # Ensure the replacement tensor has the same shape as the original output
-                    if mod_act.shape != output.shape:
-                        # Try to reshape to match output
-                        try:
-                            reshaped_act = mod_act.view(output.shape)
-                            return reshaped_act
-                        except:
-                            # If reshaping fails, return the original output
-                            print(f"Warning: Could not reshape modified activation from {mod_act.shape} to {output.shape}")
-                            return output
-                    return mod_act
-                return hook_fn
-            
-            hook_handle = layer.register_forward_hook(create_hook(modified_activation_tensor))
-            
+            # Run batched inference
             try:
                 with torch.no_grad():
-                    modified_output = self.model(input_tensor.to(self.device))
-                    modified_outputs.append(modified_output[0].cpu().numpy())
+                   batch_output = self.model(batch_input)
             finally:
-                if hook_handle:
-                    hook_handle.remove()
-                    
+                for h in hooks:
+                    h.remove()
+            
+            # Collect outputs
+            # batch_output is [N, num_classes]
+            for local_idx in range(actual_batch_size):
+                global_idx = i + local_idx
+                modified_outputs[global_idx] = batch_output[local_idx].cpu().numpy()
+                
         return modified_outputs
     
     def compute_cosine_similarities(self, 
