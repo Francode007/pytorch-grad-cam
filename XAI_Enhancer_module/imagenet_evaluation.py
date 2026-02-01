@@ -83,6 +83,7 @@ class ImageNetXAIEvaluationSuite:
     def _save_intermediate_results(self, method_name: str, results: Dict, start: int, end_index: int, output_dir: str):
         """Save raw intermediate results to JSON"""
         filename = f"partial_results_{self.model_name}_{method_name}_{start}_{end_index}.json"
+        os.makedirs(output_dir, exist_ok=True)
         filepath = os.path.join(output_dir, filename)
         
         # Convert numpy types to native Python types for JSON
