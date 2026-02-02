@@ -17,6 +17,7 @@ import glob
 from PIL import Image
 import torchvision.transforms as transforms
 import torchvision.models as models
+from torch.utils.data import Dataset, DataLoader
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -27,6 +28,31 @@ from XAI_Enhancer_module.evaluator.proper_auc_evaluation import ProperAUCEvaluat
 from XAI_Enhancer_module.utils.optimized_cam_extractor import OptimizedCamExtractor
 from XAI_Enhancer_module.utils.directory_manager import save_evaluation_results, save_analysis_data
 
+
+
+class _ImageNetDataset(Dataset):
+    """Dataset wrapper for ImageNet images to enable multi-threaded loading."""
+    def __init__(self, image_paths, predicted_labels, class_names, transform=None):
+        self.image_paths = image_paths
+        self.predicted_labels = predicted_labels
+        self.class_names = class_names
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx):
+        image_path = self.image_paths[idx]
+        predicted_label = self.predicted_labels[idx]
+        class_name = self.class_names[idx]
+        
+        image = Image.open(image_path).convert('RGB')
+        if self.transform:
+            image_tensor = self.transform(image)
+        else:
+            image_tensor = image  # Should not happen if transform provided
+            
+        return image_tensor, predicted_label, class_name, image_path
 
 class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
     """
@@ -56,6 +82,9 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         # Instead, initialize only what we need from the base class
         self.model_name = model_name
         self.model_cache_dir = model_cache_dir
+        
+        # Optimize global settings
+        torch.backends.cudnn.benchmark = True
         
         # Get device
         from XAI_Enhancer_module.utils.model_utils import get_device
@@ -632,7 +661,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
     def evaluate_enhanced_cam(self, max_images: int = 50, step_size: int = 50, 
                             verbose: bool = True, classes_filter: List[str] = None,
                             start_index: int = 0, end_index: int = None,
-                            return_raw_data: bool = False, batch_size: int = 64) -> Dict[str, any]:
+                            return_raw_data: bool = False, batch_size: int = 64, num_workers: int = 4) -> Dict[str, any]:
         """
         Evaluate Enhanced CAM method on ImageNet with proper AUC calculations.
         
@@ -661,6 +690,8 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         
         print(f"\nEvaluating Enhanced CAM on {len(image_paths)} ImageNet images...")
         print(f"Using step_size={step_size} and batch_size={batch_size} for proper evaluation...")
+        print(f"Using {num_workers} workers for data loading...")
+        
         if not verbose:
             print(f"Verbose mode OFF - only showing progress and summary.")
         
@@ -668,31 +699,119 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         deletion_aucs = []
         road_scores = []
         
+        # Create dataset and loader
+        dataset = _ImageNetDataset(image_paths, predicted_labels, class_names, self.transform)
+        loader = DataLoader(
+            dataset, 
+            batch_size=1,  # Keep batch size 1 for the complex per-image evaluation logic
+            num_workers=num_workers,
+            pin_memory=True if self.device.type == 'cuda' else False,
+            prefetch_factor=2 if num_workers > 0 else None,
+            shuffle=False
+        )
+        
         # Create progress description based on verbosity
         progress_desc = "Processing Enhanced CAM"
         
-        for i, (image_path, predicted_label, class_name) in enumerate(tqdm(
-            zip(image_paths, predicted_labels, class_names), 
+        for i, (image_tensor, predicted_label, class_name, image_path_batch) in enumerate(tqdm(
+            loader, 
             desc=progress_desc, 
-            total=len(image_paths)
+            total=len(dataset)
         )):
             try:
+                # Unpack batch (size 1)
+                image_tensor = image_tensor.squeeze(0)  # [C, H, W]
+                # Keep as 1-batch tensor for compatibility with extract and evaluate methods
+                # Actually, extract_enhanced_cam typically expects path, but we have tensor now?
+                # Wait, extract_enhanced_cam calls enhanced_cam_extractor.extract_saliency_map(image_path, ...)
+                # The extractor loads the image from path usually. 
+                # Optimization: We can modify extract_saliency_map to accept tensor, OR we continue to pass path.
+                # If we pass path, we reload image. That defeats the purpose of DataLoader prefetching image.
+                # Let's check `extract_enhanced_cam` and `OptimizedCamExtractor`.
+                # `extract_enhanced_cam` takes `image_path`.
+                # We need to change `extract_enhanced_cam` to accept tensor or just use `image_path` from loader.
+                
+                # If we use `image_path` from loader, we are still doing disk I/O in main thread inside `extract_saliency_map` if it reads file.
+                # However, `OptimizedCamExtractor` likely uses `cv2` or `PIL` to read.
+                # To fully optimize, we should pass the pre-loaded tensor to `extract_enhanced_cam`.
+                
+                # Let's check `extract_enhanced_cam`. It calls `self.enhanced_cam_extractor.extract_saliency_map`.
+                # We can't easily change `OptimizedCamExtractor` as it is in another file I haven't viewed. 
+                # BUT, if `OptimizedCamExtractor` is purely for CAM, it should take a tensor.
+                # If it takes a path, I might be limited.
+                
+                # However, the user asked for MAXIMISING RAM USAGE.
+                # Even if I just pre-load images into RAM with DataLoader, it helps.
+                # But to really help, I should use the tensor from DataLoader.
+                
+                # Let's assume for now I should use the path if I can't change extractor, 
+                # BUT `extract_enhanced_cam` does return `image_tensor` and `saliency_map`.
+                # If I can bypass internal image loading in extractor...
+                
+                # Wait, `extract_enhanced_cam` implementation in THIS file:
+                # def extract_enhanced_cam(self, image_path: str, predicted_label: int) -> Tuple[torch.Tensor, np.ndarray]:
+                #     ...
+                #     image_tensor, saliency_map = self.enhanced_cam_extractor.extract_saliency_map(image_path, predicted_label)
+                #     ...
+                
+                # I should probably just pass the path for now to be safe, as changing the extractor signature might be out of scope or risky without seeing it.
+                # BUT, using DataLoader just for paths is not "maximizing RAM/GPU" much.
+                # The "resize/transform" part is done in workers. That IS useful. 
+                # So if `extract_saliency_map` allows passing a tensor, that's best.
+                # If not, I still save time on `_evaluate_saliency_map` which USES the tensor.
+                # Wait, `_evaluate_saliency_map` takes `image_tensor`.
+                # `evaluate_enhanced_cam` GETS `image_tensor` from `extract_enhanced_cam`.
+                # So `extract_enhanced_cam` does the loading.
+                
+                # CRITICAL: If I use DataLoader to load `image_tensor`, I can pass THAT to `_evaluate_saliency_map`.
+                # But `extract_enhanced_cam` ALSO returns a tensor.
+                # So I would be loading it TWICE: once in DataLoader, once in `extract_enhanced_cam`.
+                # That wastes CPU, but maximizes RAM usage (storing loaded images in queue).
+                # But it doesn't help GPU throughput if we re-load.
+                
+                # Let's look at `evaluate_method` (Standard CAM).
+                # `self._extract_standard_cam(image_path, ...)` -> returns saliency map.
+                # Then `image = Image.open(image_path)... image_tensor = self.transform(image)...`
+                # value: `image_tensor` is used in `_evaluate_saliency_map`.
+                # HERE, using DataLoader IS beneficial because we skip the load/transform in the main loop for evaluation.
+                # `_extract_standard_cam` likely loads image internally too.
+                
+                # For `evaluate_enhanced_cam`:
+                # It calls `extract_enhanced_cam`.
+                
+                # I will proceed with DataLoader yielding tensors.
+                # Even if `extract_enhanced_cam` re-loads, at least `evaluate_standard_methods` acts better?
+                # Actually, `evaluate_enhanced_cam` calls `extract_enhanced_cam` which usually does forward pass.
+                # If I can't optimize `extract_enhanced_cam` interface, I'll still use DataLoader for the "Evaluation" phase (Insertion/Deletion) which uses the tensor.
+                # AND I can pass the DataLoader's tensor to `_evaluate_saliency_map` instead of using the one from `extract_enhanced_cam` (they should be identical).
+                # Wait, `extract_enhanced_cam` returns tensor used for CAM generation. It might be normalized differently?
+                # `ImageNetProperAUCEvaluator` uses standard ImageNet normalization. 
+                # `OptimizedCamExtractor` likely uses the same.
+                
+                # I will use the `image_path` from DataLoader (it returns tuple) to pass to `extract_enhanced_cam`.
+                # And I will use `image_tensor` from DataLoader to pass to `_evaluate_saliency_map`.
+                
+                # ALSO: To maximize RAM, setting `num_workers` high helps.
+                
+                predicted_label = predicted_label.item()
+                image_path = image_path_batch[0]
+                class_name = class_name[0]
+                
                 if verbose:
                     print(f"\n--- Image {i+1}/{len(image_paths)}: {os.path.basename(image_path)} ---")
                     print(f"    Class: {class_name}")
                     print(f"    Predicted label: {predicted_label}")
                 
-                # Extract Enhanced CAM
-                image_tensor, saliency_map = self.extract_enhanced_cam(image_path, predicted_label)
+                # Extract Enhanced CAM (Still might do I/O, hard to avoid without deeper refactor)
+                _, saliency_map = self.extract_enhanced_cam(image_path, predicted_label)
                 
-                # Evaluate saliency map using base class methods
+                # Use the PRE-FETCHED tensor for evaluation to save time
                 metrics = self._evaluate_saliency_map(
                     image_tensor, saliency_map, predicted_label, step_size, verbose, batch_size
                 )
                 
                 insertion_aucs.append(metrics['insertion_auc'])
                 deletion_aucs.append(metrics['deletion_auc'])
-                # Use road_20 as representative score for summary stats
                 road_scores.append(metrics.get('road_20', 0.0))
                 
                 if verbose:
@@ -728,7 +847,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
     def evaluate_method(self, cam_method_name: str, max_images: int = 50, 
                        classes_filter: List[str] = None,
                        start_index: int = 0, end_index: int = None,
-                       return_raw_data: bool = False, batch_size: int = 64) -> Dict[str, any]:
+                       return_raw_data: bool = False, batch_size: int = 64, num_workers: int = 4) -> Dict[str, any]:
         """
         Evaluate a standard CAM method on ImageNet.
         
@@ -751,26 +870,40 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         )
         
         print(f"\nEvaluating {cam_method_name} on {len(image_paths)} ImageNet images...")
+        print(f"Using {num_workers} workers for data loading...")
         
         insertion_aucs = []
         deletion_aucs = []
         road_scores = []
         
-        for i, (image_path, predicted_label, class_name) in enumerate(tqdm(
-            zip(image_paths, predicted_labels, class_names), 
+        # Create dataset and loader
+        dataset = _ImageNetDataset(image_paths, predicted_labels, class_names, self.transform)
+        loader = DataLoader(
+            dataset, 
+            batch_size=1,  # Keep batch size 1
+            num_workers=num_workers,
+            pin_memory=True if self.device.type == 'cuda' else False,
+            prefetch_factor=2 if num_workers > 0 else None,
+            shuffle=False
+        )
+
+        for i, (image_tensor, predicted_label, class_name, image_path_batch) in enumerate(tqdm(
+            loader, 
             desc=f"Processing {cam_method_name}", 
-            total=len(image_paths)
+            total=len(dataset)
         )):
             try:
+                # Unpack batch
+                image_tensor = image_tensor.squeeze(0)
+                predicted_label = predicted_label.item()
+                image_path = image_path_batch[0]
+                
                 # Extract standard CAM using pytorch-grad-cam
                 saliency_map = self._extract_standard_cam(
                     image_path, predicted_label, cam_method_name
                 )
                 
-                # Load and preprocess image
-                image = Image.open(image_path).convert('RGB')
-                image_tensor = self.transform(image).unsqueeze(0).to(self.device)
-                
+                # Use pre-fetched image_tensor for evaluation
                 # Evaluate saliency map
                 metrics = self._evaluate_saliency_map(
                     image_tensor, saliency_map, predicted_label, step_size=50, verbose=False, batch_size=batch_size

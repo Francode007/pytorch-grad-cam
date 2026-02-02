@@ -57,7 +57,8 @@ class ImageNetXAIEvaluationSuite:
                             start_index: int = 0, end_index: int = None,
                             save_intermediate: bool = False,
                             output_dir: str = ".",
-                            batch_size: int = 64) -> Dict:
+                            batch_size: int = 64,
+                            num_workers: int = 4) -> Dict:
         print(f"\n{'='*60}")
         print("EVALUATING ENHANCED CAM ON IMAGENET")
         print(f"{'='*60}")
@@ -71,7 +72,8 @@ class ImageNetXAIEvaluationSuite:
             start_index=start_index,
             end_index=end_index,
             return_raw_data=save_intermediate,
-            batch_size=batch_size
+            batch_size=batch_size,
+            num_workers=num_workers
         )
         self._print_results("Enhanced CAM", results)
         
@@ -110,7 +112,8 @@ class ImageNetXAIEvaluationSuite:
                                 classes_filter: List[str] = None,
                                 start_index: int = 0, end_index: int = None,
                                 save_intermediate: bool = False,
-                                batch_size: int = 64) -> Dict:
+                                batch_size: int = 64,
+                                num_workers: int = 4) -> Dict:
         if methods is None:
             methods = ["GradCAM", "GradCAM++", "EigenCAM", "HiResCAM", "LayerCAM", "ScoreCAM"]
         results = {}
@@ -125,8 +128,10 @@ class ImageNetXAIEvaluationSuite:
                 classes_filter=classes_filter,
                 start_index=start_index,
                 end_index=end_index,
+
                 return_raw_data=save_intermediate,
-                batch_size=batch_size
+                batch_size=batch_size,
+                num_workers=num_workers
             )
             results[method] = method_results
             self._print_results(method, method_results)
@@ -370,6 +375,7 @@ Note: Models will be loaded from --model-cache-dir (default: /Users/f0s03xp/pyto
     # New arguments for batch processing and aggregation
     parser.add_argument('--start-index', type=int, default=0, help='Start index for batch processing')
     parser.add_argument('--end-index', type=int, default=None, help='End index for batch processing')
+    parser.add_argument('--num-workers', type=int, default=4, help='Number of data loader workers')
     parser.add_argument('--save-intermediate', action='store_true', help='Save raw intermediate results to JSON')
     parser.add_argument('--aggregate-dir', help='Directory to aggregate results from')
     
@@ -462,7 +468,7 @@ Note: Models will be loaded from --model-cache-dir (default: /Users/f0s03xp/pyto
         )
         if args.eval_type == 'enhanced-only':
             enhanced_results = suite.evaluate_enhanced_cam(
-                max_images=args.max_images,
+                max_images=-1 if (args.start_index > 0 or args.end_index is not None) else args.max_images,
                 step_size=args.step_size,
                 verbose=verbose,
                 classes_filter=args.classes,
@@ -470,7 +476,8 @@ Note: Models will be loaded from --model-cache-dir (default: /Users/f0s03xp/pyto
                 end_index=args.end_index,
                 save_intermediate=args.save_intermediate,
                 output_dir=args.output_analysis_dir,
-                batch_size=args.batch_size
+                batch_size=args.batch_size,
+                num_workers=args.num_workers
             )
             
             if args.email_to:
@@ -484,14 +491,15 @@ Note: Models will be loaded from --model-cache-dir (default: /Users/f0s03xp/pyto
         elif args.eval_type == 'standard-only':
             standard_results = suite.evaluate_standard_methods(
                 methods=args.methods,
-                max_images=args.max_images,
+                max_images=-1 if (args.start_index > 0 or args.end_index is not None) else args.max_images,
                 base_csv_dir=args.output_csv_dir,
                 base_analysis_dir=args.output_analysis_dir,
                 classes_filter=args.classes,
                 start_index=args.start_index,
                 end_index=args.end_index,
                 save_intermediate=args.save_intermediate,
-                batch_size=args.batch_size
+                batch_size=args.batch_size,
+                num_workers=args.num_workers
             )
             if args.email_to:
                 subject = f"ImageNet Batch {args.start_index}-{args.end_index}: Standard Methods"

@@ -9,3 +9,6 @@ dist
 *.png
 *.jpeg
 *.log
+*.pth
+*.json
+*.csv
