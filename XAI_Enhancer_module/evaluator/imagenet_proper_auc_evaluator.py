@@ -18,6 +18,7 @@ from PIL import Image
 import torchvision.transforms as transforms
 import torchvision.models as models
 from torch.utils.data import Dataset, DataLoader
+import time
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -713,11 +714,9 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         # Create progress description based on verbosity
         progress_desc = "Processing Enhanced CAM"
         
-        for i, (image_tensor, predicted_label, class_name, image_path_batch) in enumerate(tqdm(
-            loader, 
-            desc=progress_desc, 
-            total=len(dataset)
-        )):
+        start_time = time.time()
+        pbar = tqdm(loader, desc=progress_desc, total=len(dataset))
+        for i, (image_tensor, predicted_label, class_name, image_path_batch) in enumerate(pbar):
             try:
                 # Unpack batch (size 1)
                 image_tensor = image_tensor.squeeze(0)  # [C, H, W]
@@ -819,6 +818,30 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                     print(f"    Deletion AUC: {metrics['deletion_auc']:.4f}")
                     print(f"    ROAD Score (20%): {metrics.get('road_20', 0.0):.4f}")
                 
+                # Update progress bar with current means
+                current_ins_mean = np.mean(insertion_aucs)
+                current_del_mean = np.mean(deletion_aucs)
+                current_road_mean = np.mean(road_scores)
+                
+                pbar.set_postfix({
+                    'Ins': f"{current_ins_mean:.3f}",
+                    'Del': f"{current_del_mean:.3f}",
+                    'ROAD': f"{current_road_mean:.3f}"
+                })
+                
+                # Periodic logging for non-verbose mode (every 50 images)
+                if not verbose and (i + 1) % 50 == 0:
+                     elapsed = time.time() - start_time
+                     avg_time_per_img = elapsed / (i + 1)
+                     remaining_imgs = len(dataset) - (i + 1)
+                     eta = remaining_imgs * avg_time_per_img
+                     
+                     print(f"\n[Batch {i+1}/{len(dataset)}] Means - "
+                           f"Ins: {current_ins_mean:.4f}, "
+                           f"Del: {current_del_mean:.4f}, "
+                           f"ROAD: {current_road_mean:.4f} | "
+                           f"Elapsed: {elapsed:.1f}s, ETA: {eta:.1f}s ({1/avg_time_per_img:.2f} img/s)")
+                
             except Exception as e:
                 print(f"Error processing {image_path}: {e}")
                 continue
@@ -887,11 +910,9 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             shuffle=False
         )
 
-        for i, (image_tensor, predicted_label, class_name, image_path_batch) in enumerate(tqdm(
-            loader, 
-            desc=f"Processing {cam_method_name}", 
-            total=len(dataset)
-        )):
+        start_time = time.time()
+        pbar = tqdm(loader, desc=f"Processing {cam_method_name}", total=len(dataset))
+        for i, (image_tensor, predicted_label, class_name, image_path_batch) in enumerate(pbar):
             try:
                 # Unpack batch
                 image_tensor = image_tensor.squeeze(0)
@@ -912,6 +933,31 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                 insertion_aucs.append(metrics['insertion_auc'])
                 deletion_aucs.append(metrics['deletion_auc'])
                 road_scores.append(metrics.get('road_20', 0.0))
+                
+                # Update progress bar with current means
+                current_ins_mean = np.mean(insertion_aucs)
+                current_del_mean = np.mean(deletion_aucs)
+                current_road_mean = np.mean(road_scores)
+                
+                pbar.set_postfix({
+                    'Ins': f"{current_ins_mean:.3f}",
+                    'Del': f"{current_del_mean:.3f}",
+                    'ROAD': f"{current_road_mean:.3f}"
+                })
+                
+                # Periodic logging for non-verbose mode (every 50 images)
+                # Note: evaluate_method doesn't have a verbose arg exposed in the loop same as above, but we can default check
+                if (i + 1) % 50 == 0:
+                     elapsed = time.time() - start_time
+                     avg_time_per_img = elapsed / (i + 1)
+                     remaining_imgs = len(dataset) - (i + 1)
+                     eta = remaining_imgs * avg_time_per_img
+                     
+                     print(f"\n[Batch {i+1}/{len(dataset)}] Means - "
+                           f"Ins: {current_ins_mean:.4f}, "
+                           f"Del: {current_del_mean:.4f}, "
+                           f"ROAD: {current_road_mean:.4f} | "
+                           f"Elapsed: {elapsed:.1f}s, ETA: {eta:.1f}s ({1/avg_time_per_img:.2f} img/s)")
                 
             except Exception as e:
                 print(f"Error processing {image_path}: {e}")
