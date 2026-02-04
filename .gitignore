@@ -13,3 +13,4 @@ dist
 *.json
 *.csv
 /XAI_Enhancer_module/XAI_Enhancer_Colab_Runner.ipynb
+/XAI_Enhancer_module/run_xai_enhancer.py
