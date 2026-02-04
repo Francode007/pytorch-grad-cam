@@ -5,18 +5,21 @@ This module provides an optimized evaluation framework for your novel XAI method
 ## 🚀 Key Optimizations
 
 ### 1. **Efficient Architecture Optimization**
+
 - **Cached Predictions**: Predictions are computed once and cached to avoid redundant forward passes
 - **Batch Processing**: Optimized batch processing for saliency map extraction
 - **Memory Management**: Automatic cache clearing and memory optimization
 - **Reduced Forward Passes**: Eliminated redundant model calls in the evaluation pipeline
 
 ### 2. **Modular Design**
+
 - **OptimizedCamExtractor**: Efficient saliency map extraction with caching
 - **OptimizedPredictor**: Prediction management with intelligent caching
 - **XAIEvaluationSuite**: Comprehensive evaluation framework
 - **Separate Metric Modules**: Modular metric computation (Insertion/Deletion, ROAD)
 
 ### 3. **Performance Improvements**
+
 - ⚡ **3-5x faster** saliency map extraction
 - 💾 **50% less memory usage** through optimized caching
 - 🔄 **Batch-optimized** processing pipeline
@@ -27,7 +30,7 @@ This module provides an optimized evaluation framework for your novel XAI method
 ```
 XAI_Enhancer_module/
 ├── optimized_cam_extractor.py      # Efficient CAM extraction
-├── optimized_predictor.py          # Cached prediction management  
+├── optimized_predictor.py          # Cached prediction management
 ├── xai_evaluation_suite.py         # Main evaluation framework
 ├── example_evaluation.py           # Usage examples
 ├── GradCAM_enhanced.py            # Your novel XAI method
@@ -157,14 +160,17 @@ comprehensive_results = evaluator.comprehensive_layer_experimentation(
 ## 📊 Evaluation Metrics
 
 ### 1. **Insertion/Deletion Metrics**
+
 - Measures how model confidence changes when important pixels are inserted/deleted
 - Higher insertion AUC and lower deletion AUC indicate better explanations
 
 ### 2. **ROAD (Remove and Debias) Metric**
+
 - Evaluates explanation quality by removing important regions
 - Lower ROAD scores indicate better explanations
 
 ### 3. **Comprehensive Analysis**
+
 - Automatic plotting of all metrics
 - Statistical analysis with mean and standard deviation
 - Comparison across multiple models
@@ -172,6 +178,7 @@ comprehensive_results = evaluator.comprehensive_layer_experimentation(
 ## 🔧 Configuration
 
 ### Supported Models
+
 - ResNet (18, 34, 50)
 - EfficientNet (B0, B4)
 - DenseNet (121)
@@ -205,23 +212,25 @@ results = evaluator.run_full_evaluation(
 
 ## 📈 Performance Comparison
 
-| Metric | Original Implementation | Optimized Implementation | Improvement |
-|--------|------------------------|---------------------------|-------------|
-| Saliency Extraction | ~120s | ~35s | 3.4x faster |
-| Memory Usage | ~8GB | ~4GB | 50% reduction |
-| Prediction Time | ~45s | ~12s | 3.8x faster |
-| Total Evaluation | ~180s | ~55s | 3.3x faster |
+| Metric              | Original Implementation | Optimized Implementation | Improvement   |
+| ------------------- | ----------------------- | ------------------------ | ------------- |
+| Saliency Extraction | ~120s                   | ~35s                     | 3.4x faster   |
+| Memory Usage        | ~8GB                    | ~4GB                     | 50% reduction |
+| Prediction Time     | ~45s                    | ~12s                     | 3.8x faster   |
+| Total Evaluation    | ~180s                   | ~55s                     | 3.3x faster   |
 
-*Results based on evaluation of 100 images on ResNet50*
+_Results based on evaluation of 100 images on ResNet50_
 
 ## 🎯 Key Features
 
 ### Novel XAI Method Integration
+
 - Seamless integration of your enhanced GradCAM method
 - Multi-layer saliency extraction with cosine similarity weighting
 - Softmax-based layer combination for optimal explanations
 
 ### Advanced Layer Analysis
+
 - **Comprehensive Layer Detection**: Automatically finds all Conv2d layers
 - **Stage-based Grouping**: Groups layers by model architecture stages
 - **Individual Layer Testing**: Tests each convolutional layer separately
@@ -231,6 +240,7 @@ results = evaluator.run_full_evaluation(
 - **Performance Comparison**: Compares different layer setups automatically
 
 ### Optimization Strategies
+
 1. **Prediction Caching**: Avoid redundant model forward passes
 2. **Batch Processing**: Vectorized operations for better GPU utilization
 3. **Memory Management**: Automatic cleanup and cache management
@@ -238,6 +248,7 @@ results = evaluator.run_full_evaluation(
 5. **Layer Optimization**: Find the best layer combinations automatically
 
 ### Evaluation Robustness
+
 - Multiple evaluation metrics for comprehensive analysis
 - Statistical significance testing
 - Comparative analysis across models and layer combinations
@@ -266,15 +277,45 @@ python example_evaluation.py
 
 # Choose from 9 different evaluation scenarios:
 # 1. Single model evaluation
-# 2. Multiple models comparison  
+# 2. Multiple models comparison
 # 3. Custom image set evaluation
 # 4. Step-by-step evaluation
 # 5. Quick test (minimal data)
 # 6. Layer analysis and combinations
 # 7. Individual layer experimentation
+# 7. Individual layer experimentation
 # 8. Comprehensive experimentation
 # 9. Comprehensive analysis
 ```
+
+### Batch Evaluation via CLI
+
+For large-scale evaluation (similar to the Colab notebook logic), use the provided runner script:
+
+```bash
+# Basic usage
+python run_xai_enhancer.py --model resnet50 --base_cam HiResCAM
+
+# With custom parameters
+python run_xai_enhancer.py \
+    --model resnet50 \
+    --base_cam HiResCAM \
+    --total-images 5000 \
+    --batch-size 1000 \
+    --gpu-batch-size 256 \
+    --dataset-path ./imagenet_val_sample
+```
+
+**Arguments:**
+
+- `--model`: (Required) Model name (e.g., `resnet50`, `vgg16`, `efficientnet_b0`).
+- `--base_cam`: (Required) Base CAM method (e.g., `HiResCAM`, `GradCAM`).
+- `--total-images`: Total number of images to evaluate (default: 5000).
+- `--batch-size`: Processing chunk size for restartability (default: 1000).
+- `--gpu-batch-size`: Batch size for GPU inference (default: 1024).
+- `--dataset-path`: Path to the dataset (default: `imagenet_val_sample`).
+
+**Note:** The script uses `fnsaikia@gmail.com` as the default email recipient. You can provide an email password interactively if you want email notifications.
 
 ## 📝 Output Files
 
@@ -325,7 +366,7 @@ best_layers = None
 for layers in layer_combinations:
     evaluator = XAIEvaluationSuite("resnet50", conv_layers=layers)
     results = evaluator.run_full_evaluation()
-    
+
     if results['insertion_auc'] > best_score:
         best_score = results['insertion_auc']
         best_layers = layers

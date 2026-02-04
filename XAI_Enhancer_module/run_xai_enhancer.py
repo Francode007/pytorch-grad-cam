@@ -237,6 +237,7 @@ def main():
             "--methods", args.base_cam,
             "--model-cache-dir", MODEL_CACHE_DIR,
             "--device", "cuda",
+            "--layer-mode", "last",
             "--start-index", str(start_idx),
             "--end-index", str(end_idx),
             "--batch-size", str(args.gpu_batch_size),

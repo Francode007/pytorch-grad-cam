@@ -28,6 +28,17 @@ def download_all_models(custom_folder: str):
     ]
 
     print("\nStarting model downloads...")
+    
+    # Check if models already exist
+    checkpoints_dir = os.path.join(custom_folder, 'hub', 'checkpoints')
+    if os.path.exists(checkpoints_dir):
+        cached_files = [f for f in os.listdir(checkpoints_dir) if f.endswith('.pth')]
+        # We expect 14 models
+        if len(cached_files) >= 14:
+            print(f"✅ Found {len(cached_files)} models in cache. Skipping download.")
+            print(f"Check the 'hub/checkpoints' subdirectory inside: {custom_folder}")
+            return
+
     # 3. Loop through the list and download each model
     for model_name in tqdm(model_names, desc="Downloading Models"):
         try:
