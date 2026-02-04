@@ -189,6 +189,9 @@ def main():
     print(f"Base CAM: {args.base_cam} (Enhanced: {enhanced_method})")
     print(f"GPU Batch Size: {args.gpu_batch_size}")
     
+    # Define output directory for analysis results
+    results_dir = f"./analysis_results/{args.model}_imagenet"
+    
     # Phase 1: Enhanced CAM
     print(f"\n{'='*20} PHASE 1: ENHANCED CAM {'='*20}")
     for start_idx in range(0, args.total_images, args.batch_size):
@@ -209,6 +212,7 @@ def main():
             "--batch-size", str(args.gpu_batch_size),
             "--step-size", str(args.step_size),
             "--save-intermediate",
+            "--output-analysis-dir", results_dir,
             "--num-workers", num_workers
         ]
         
@@ -243,6 +247,7 @@ def main():
             "--batch-size", str(args.gpu_batch_size),
             "--step-size", str(args.step_size),
             "--save-intermediate",
+            "--output-analysis-dir", results_dir,
             "--num-workers", num_workers
         ]
         
@@ -259,14 +264,15 @@ def main():
 
     # Phase 3: Aggregation
     print(f"\n{'='*20} PHASE 3: AGGREGATION {'='*20}")
-    results_dir = f"./analysis_results/{args.model}_imagenet"
+    # results_dir is defined above
     
     agg_cmd = [
         sys.executable, "imagenet_evaluation.py",
         "--model", args.model,
         "--imagenet-path", dataset_dir,
         "--aggregate-dir", results_dir,
-        "--output-csv-dir", "./csv_exports"
+        "--output-csv-dir", "./csv_exports",
+        "--model-cache-dir", MODEL_CACHE_DIR
     ]
     
     if email_password:
