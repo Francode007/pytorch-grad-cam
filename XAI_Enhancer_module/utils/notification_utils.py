@@ -6,7 +6,8 @@ import os
 
 def send_email_notification(to_email: str, subject: str, body: str, 
                           sender_email: str = None, sender_password: str = None,
-                          smtp_server: str = "smtp.gmail.com", smtp_port: int = 587):
+                          smtp_server: str = "smtp.gmail.com", smtp_port: int = 587,
+                          subtype: str = "plain"):
     """
     Send an email notification.
     
@@ -18,6 +19,7 @@ def send_email_notification(to_email: str, subject: str, body: str,
         sender_password: Sender password or app password (defaults to env var SENDER_PASSWORD)
         smtp_server: SMTP server address (default: smtp.gmail.com)
         smtp_port: SMTP port (default: 587 for TLS)
+        subtype: MIME text subtype ('plain' or 'html')
     
     Returns:
         bool: True if sent successfully, False otherwise
@@ -38,7 +40,7 @@ def send_email_notification(to_email: str, subject: str, body: str,
         msg['To'] = to_email
         msg['Subject'] = subject
         
-        msg.attach(MIMEText(body, 'plain'))
+        msg.attach(MIMEText(body, subtype))
         
         server = smtplib.SMTP(smtp_server, smtp_port)
         server.starttls()

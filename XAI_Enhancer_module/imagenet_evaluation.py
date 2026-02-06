@@ -230,9 +230,10 @@ class ImageNetXAIEvaluationSuite:
                 
                 # Append lists dynamically for all keys found in data
                 for key, values in data.items():
-                    if key not in aggregated_data[method_name]:
-                        aggregated_data[method_name][key] = []
-                    aggregated_data[method_name][key].extend(values)
+                    if isinstance(values, list):
+                        if key not in aggregated_data[method_name]:
+                            aggregated_data[method_name][key] = []
+                        aggregated_data[method_name][key].extend(values)
                     
             except Exception as e:
                 print(f"Error reading {file}: {e}")
@@ -240,17 +241,36 @@ class ImageNetXAIEvaluationSuite:
         # Calculate final stats
         final_rows = []
         for method, metrics in aggregated_data.items():
+            # Determine num images from available keys
+            num_imgs = 0
+            if 'insertion_aucs' in metrics:
+                num_imgs = len(metrics['insertion_aucs'])
+            elif 'insertion_auc' in metrics:
+                num_imgs = len(metrics['insertion_auc'])
+                
             row = {
                 'Method': method,
                 'Dataset': 'ImageNet',
-                'Images_Evaluated': len(metrics['insertion_auc']) if 'insertion_auc' in metrics else 0
+                'Images_Evaluated': num_imgs
+            }
+            
+            # Key mapping for standardization
+            key_map = {
+                'insertion_aucs': 'Insertion_AUC',
+                'deletion_aucs': 'Deletion_AUC',
+                'road_scores': 'ROAD',
+                'insertion_auc': 'Insertion_AUC',
+                'deletion_auc': 'Deletion_AUC',
+                'road': 'ROAD'
             }
             
             # Calculate mean/std for each metric type found
             for metric_name, values in metrics.items():
                 if values:
-                    row[f"{metric_name}_Mean"] = np.mean(values)
-                    row[f"{metric_name}_Std"] = np.std(values)
+                    # Use mapped name if available, else original
+                    std_name = key_map.get(metric_name, metric_name)
+                    row[f"{std_name}_Mean"] = np.mean(values)
+                    row[f"{std_name}_Std"] = np.std(values)
             
             final_rows.append(row)
             

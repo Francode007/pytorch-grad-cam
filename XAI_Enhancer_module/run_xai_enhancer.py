@@ -10,6 +10,8 @@ from tqdm import tqdm
 from datasets import load_dataset
 from huggingface_hub import login
 from download_models import download_all_models
+import pandas as pd
+from utils.notification_utils import send_email_notification
 
 def run_command(cmd_list):
     """Run a command using subprocess and stream output."""
@@ -275,14 +277,56 @@ def main():
         "--model-cache-dir", MODEL_CACHE_DIR
     ]
     
-    if email_password:
-        agg_cmd.extend([
-            "--email-to", email_to,
-            "--email-sender", email_sender,
-            "--email-password", email_password
-        ])
-        
     run_command(agg_cmd)
+        
+    # --- 4. Final Comprehensive Email ---
+    if email_password:
+        try:
+            print("\n📧 Preparing comprehensive email report...")
+            # Path to aggregated results: ./csv_exports/{model}_imagenet_aggregated.csv
+            csv_path = f"./csv_exports/{args.model}_imagenet_aggregated.csv"
+            
+            if os.path.exists(csv_path):
+                df = pd.read_csv(csv_path)
+                
+                # Create HTML Table
+                # Sort by Method to have a consistent order
+                if 'Method' in df.columns:
+                    df = df.sort_values('Method')
+                
+                # Format floats to 4 decimal places
+                pd.options.display.float_format = '{:,.4f}'.format
+                html_table = df.to_html(index=False, border=1, justify="center")
+                
+                # Add some basic styling to the table
+                html_table = html_table.replace('border="1"', 'style="border-collapse: collapse; width: 100%; border: 1px solid #ddd;"')
+                html_table = html_table.replace('<th>', '<th style="background-color: #f2f2f2; padding: 8px; text-align: center;">')
+                html_table = html_table.replace('<td>', '<td style="padding: 8px; text-align: center;">')
+                
+                subject = f"XAI Evaluation Complete: {args.model}"
+                
+                body = f"""
+                <html>
+                <body style="font-family: Arial, sans-serif;">
+                    <h2>XAI Evaluation Report</h2>
+                    <p><strong>Model:</strong> {args.model}</p>
+                    <p><strong>Base CAM:</strong> {args.base_cam}</p>
+                    <p><strong>Enhanced Method:</strong> {enhanced_method}</p>
+                    <p><strong>Total Images Evaluated:</strong> {args.total_images}</p>
+                    
+                    <h3>Aggregated Results</h3>
+                    {html_table}
+                    
+                    <p><em>This is an automated report from the XAI Enhancer Module.</em></p>
+                </body>
+                </html>
+                """
+                
+                send_email_notification(email_to, subject, body, email_sender, email_password, subtype='html')
+            else:
+                print(f"⚠️ Could not find aggregated CSV at {csv_path}, skipping email.")
+        except Exception as e:
+            print(f"❌ Error sending comprehensive email: {e}")
 
 if __name__ == "__main__":
     main()
