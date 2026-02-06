@@ -136,6 +136,8 @@ def main():
     parser.add_argument('--total-images', type=int, default=5000, help='Total images to evaluate')
     parser.add_argument('--step-size', type=int, default=224, help='Pixel step size')
     parser.add_argument('--dataset-path', type=str, default='imagenet_val_sample', help='Path to dataset')
+    parser.add_argument('--run-mode', type=str, default='both', choices=['both', 'enhanced', 'standard'],
+                        help='Execution mode: enhanced, standard, or both (default: both)')
     
     args = parser.parse_args()
 
@@ -195,74 +197,82 @@ def main():
     results_dir = f"./analysis_results/{args.model}_imagenet"
     
     # Phase 1: Enhanced CAM
-    print(f"\n{'='*20} PHASE 1: ENHANCED CAM {'='*20}")
-    for start_idx in range(0, args.total_images, args.batch_size):
-        end_idx = min(start_idx + args.batch_size, args.total_images)
-        print(f"\n▶️ Processing Chunk: {start_idx} to {end_idx}")
-        
-        cmd = [
-            sys.executable, "imagenet_evaluation.py",
-            "--model", args.model,
-            "--imagenet-path", dataset_dir,
-            "--eval-type", "enhanced-only",
-            "--enhanced-cam-method", enhanced_method,
-            "--model-cache-dir", MODEL_CACHE_DIR,
-            "--device", "cuda",
-            "--layer-mode", "all",
-            "--start-index", str(start_idx),
-            "--end-index", str(end_idx),
-            "--batch-size", str(args.gpu_batch_size),
-            "--step-size", str(args.step_size),
-            "--save-intermediate",
-            "--output-analysis-dir", results_dir,
-            "--num-workers", num_workers
-        ]
-        
-        if email_password:
-            cmd.extend([
-                "--email-to", email_to,
-                "--email-sender", email_sender,
-                "--email-password", email_password
-            ])
+    if args.run_mode in ['both', 'enhanced']:
+        print(f"\n{'='*20} PHASE 1: ENHANCED CAM {'='*20}")
+        for start_idx in range(0, args.total_images, args.batch_size):
+            end_idx = min(start_idx + args.batch_size, args.total_images)
+            print(f"\n▶️ Processing Chunk: {start_idx} to {end_idx}")
             
-        rc = run_command(cmd)
-        if rc != 0:
-            print(f"⚠️ Phase 1 chunk {start_idx}-{end_idx} failed with code {rc}")
+            cmd = [
+                sys.executable, "imagenet_evaluation.py",
+                "--model", args.model,
+                "--imagenet-path", dataset_dir,
+                "--eval-type", "enhanced-only",
+                "--enhanced-cam-method", enhanced_method,
+                "--model-cache-dir", MODEL_CACHE_DIR,
+                "--device", "cuda",
+                "--layer-mode", "all",
+                "--start-index", str(start_idx),
+                "--end-index", str(end_idx),
+                "--batch-size", str(args.gpu_batch_size),
+                "--step-size", str(args.step_size),
+                "--save-intermediate",
+                "--output-analysis-dir", results_dir,
+                "--num-workers", num_workers
+            ]
+            
+            if email_password:
+                cmd.extend([
+                    "--email-to", email_to,
+                    "--email-sender", email_sender,
+                    "--email-password", email_password
+                ])
+                
+            rc = run_command(cmd)
+            if rc != 0:
+                print(f"⚠️ Phase 1 chunk {start_idx}-{end_idx} failed with code {rc}")
 
     # Phase 2: Standard Methods
-    print(f"\n{'='*20} PHASE 2: STANDARD METHODS {'='*20}")
-    for start_idx in range(0, args.total_images, args.batch_size):
-        end_idx = min(start_idx + args.batch_size, args.total_images)
-        print(f"\n▶️ Processing Chunk: {start_idx} to {end_idx}")
+    if args.run_mode in ['both', 'standard']:
+        print(f"\n{'='*20} PHASE 2: STANDARD METHODS {'='*20}")
         
-        cmd = [
-            sys.executable, "imagenet_evaluation.py",
-            "--model", args.model,
-            "--imagenet-path", dataset_dir,
-            "--eval-type", "standard-only",
-            "--methods", args.base_cam,
-            "--model-cache-dir", MODEL_CACHE_DIR,
-            "--device", "cuda",
-            "--layer-mode", "last",
-            "--start-index", str(start_idx),
-            "--end-index", str(end_idx),
-            "--batch-size", str(args.gpu_batch_size),
-            "--step-size", str(args.step_size),
-            "--save-intermediate",
-            "--output-analysis-dir", results_dir,
-            "--num-workers", num_workers
-        ]
-        
-        if email_password:
-            cmd.extend([
-                "--email-to", email_to,
-                "--email-sender", email_sender,
-                "--email-password", email_password
-            ])
+        # Map friendly names to internal names if needed
+        standard_method_name = args.base_cam
+        if standard_method_name == "GradCAMPlusPlus":
+            standard_method_name = "GradCAM++"
             
-        rc = run_command(cmd)
-        if rc != 0:
-            print(f"⚠️ Phase 2 chunk {start_idx}-{end_idx} failed with code {rc}")
+        for start_idx in range(0, args.total_images, args.batch_size):
+            end_idx = min(start_idx + args.batch_size, args.total_images)
+            print(f"\n▶️ Processing Chunk: {start_idx} to {end_idx}")
+            
+            cmd = [
+                sys.executable, "imagenet_evaluation.py",
+                "--model", args.model,
+                "--imagenet-path", dataset_dir,
+                "--eval-type", "standard-only",
+                "--methods", standard_method_name,
+                "--model-cache-dir", MODEL_CACHE_DIR,
+                "--device", "cuda",
+                "--layer-mode", "last",
+                "--start-index", str(start_idx),
+                "--end-index", str(end_idx),
+                "--batch-size", str(args.gpu_batch_size),
+                "--step-size", str(args.step_size),
+                "--save-intermediate",
+                "--output-analysis-dir", results_dir,
+                "--num-workers", num_workers
+            ]
+            
+            if email_password:
+                cmd.extend([
+                    "--email-to", email_to,
+                    "--email-sender", email_sender,
+                    "--email-password", email_password
+                ])
+                
+            rc = run_command(cmd)
+            if rc != 0:
+                print(f"⚠️ Phase 2 chunk {start_idx}-{end_idx} failed with code {rc}")
 
     # Phase 3: Aggregation
     print(f"\n{'='*20} PHASE 3: AGGREGATION {'='*20}")
