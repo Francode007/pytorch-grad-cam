@@ -8,7 +8,7 @@ from tqdm import tqdm
 from datasets import load_dataset
 from huggingface_hub import login
 
-def create_imagenet_sample_from_hf(target_count=50, base_path="imagenet_val_sample"):
+def create_imagenet_sample_from_hf(target_count=500, base_path="imagenet_val_sample"):
     print(f"\nStarting download of {target_count} images from ImageNet-1k validation set...")
     
     # Try to login if token is in env
@@ -97,4 +97,9 @@ def create_imagenet_sample_from_hf(target_count=50, base_path="imagenet_val_samp
     return str(base_dir)
 
 if __name__ == "__main__":
-    create_imagenet_sample_from_hf()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--count", type=int, default=500, help="Number of images to download")
+    args = parser.parse_args()
+    
+    create_imagenet_sample_from_hf(target_count=args.count)

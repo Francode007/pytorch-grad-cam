@@ -90,17 +90,57 @@ def load_pretrained_imagenet_model(model_name: str, device: str = "cpu") -> nn.M
     return model
 
 
-def get_model_target_layers(model: nn.Module, model_name: str) -> List[nn.Module]:
+def get_model_target_layers(model: nn.Module, model_name: str, all_layers: bool = False) -> List[nn.Module]:
     """
     Get appropriate target layers for CAM methods based on model architecture.
     
     Args:
         model: The loaded model
         model_name: Name of the model
+        all_layers: If True, returns all convolutional layers (for enhanced method).
+                   If False, returns only the last convolutional layer (for standard CAM).
         
     Returns:
         List of target layers for CAM
     """
+    if all_layers:
+        # Return all convolutional layers (or stages)
+        layers = []
+        if 'resnet' in model_name:
+            # ResNet has 4 layers: layer1, layer2, layer3, layer4
+            layers.extend([model.layer1[-1], model.layer2[-1], model.layer3[-1], model.layer4[-1]])
+        elif 'vgg' in model_name:
+             # VGG features are sequential, take every MaxPool or just all Convs?
+             # Standard practice for layer-wise is usually the end of blocks.
+             # VGG is flat. Let's return all Conv2d layers for now, or maybe selected ones to avoid too many?
+             # For simplicity/correctness of "stagewise", we likely want the last conv of each block.
+             # But determining blocks in VGG features list is tricky without hardcoding indices.
+             # Let's return ALL conv layers for VGG if requested, or maybe every 2nd/3rd?
+             # Safest is all modules that are Conv2d.
+             layers = [m for m in model.features.modules() if isinstance(m, nn.Conv2d)]
+        elif 'densenet' in model_name:
+             # DenseNet features: denseblock1, transition1, denseblock2...
+             # We can pick the norm layers after each block?
+             # model.features has keys like denseblock1, transition1...
+             # Let's try to get all 'denseblock' outputs?
+             # Accessing named children might be safer.
+             for name, module in model.features.named_children():
+                 if 'denseblock' in name:
+                     layers.append(module) # or module[-1]? DenseBlock is a container.
+             # If empty (fail safe), fallback to all convs
+             if not layers:
+                 layers = [m for m in model.modules() if isinstance(m, nn.Conv2d)]
+        elif 'efficientnet' in model_name:
+             # EfficientNet features are blocks.
+             # Let's return the last layer of each stage?
+             # Simplified: Return all Conv2d
+             layers = [m for m in model.modules() if isinstance(m, nn.Conv2d)]
+        else:
+             layers = [m for m in model.modules() if isinstance(m, nn.Conv2d)]
+             
+        return layers
+
+    # Default: Last Layer Only
     if 'resnet' in model_name:
         # For ResNet models, use the last block of layer4
         return [model.layer4[-1]]

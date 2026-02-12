@@ -46,7 +46,7 @@ def main():
     parser.add_argument("--k", type=int, default=5, help="Top-K parameter")
     parser.add_argument("--temp", type=float, default=0.1, help="Temperature parameter")
     parser.add_argument("--images-path", type=str, default="imagenet_val_sample", help="Path to images")
-    parser.add_argument("--count", type=int, default=10, help="Number of images to process")
+    parser.add_argument("--count", type=int, default=500, help="Number of images to process")
     parser.add_argument("--output-dir", type=str, default="enhanced_results", help="Output directory")
     parser.add_argument("--compare", action="store_true", help="Run comparison against standard CAM methods")
     
@@ -76,7 +76,9 @@ def main():
     
     # Load model and layers using available utilities
     model = load_pretrained_imagenet_model(args.model, device)
-    target_layers = get_model_target_layers(model, args.model)
+    # USE ALL LAYERS for Enhanced Method
+    target_layers = get_model_target_layers(model, args.model, all_layers=True)
+    print(f"Enhanced Extractor initialized with {len(target_layers)} layers/stages.")
     
     # 3. Setup Extractor
     extractor = EnhancedExtractorV2(
