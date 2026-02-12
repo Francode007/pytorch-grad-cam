@@ -48,6 +48,7 @@ def main():
     parser.add_argument("--images-path", type=str, default="imagenet_val_sample", help="Path to images")
     parser.add_argument("--count", type=int, default=500, help="Number of images to process")
     parser.add_argument("--output-dir", type=str, default="enhanced_results", help="Output directory")
+    parser.add_argument("--compare", action="store_true", help="Run comparison against standard CAM methods")
     parser.add_argument("--base-cam", type=str, default="GradCAM",
                         choices=["GradCAM", "GradCAM++", "HiResCAM", "ScoreCAM", "AblationCAM"],
                         help="Base CAM method to use for enhancement")
