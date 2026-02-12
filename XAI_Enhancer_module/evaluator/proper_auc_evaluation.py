@@ -37,12 +37,17 @@ class ProperAUCEvaluator:
     Evaluator that calculates proper AUC scores in [0,1] range for insertion/deletion metrics.
     """
     
-    def __init__(self, model_name: str = "resnet18", device_preference: str = "auto"):
+    def __init__(self, model_name: str = "resnet18", device_preference: str = "auto", model=None):
         self.model_name = model_name
         self.device = get_device(device_preference)
         
-        # Load model
-        self.model = test_model(model_name, device_preference=device_preference)
+        # Load model if not provided
+        if model is not None:
+            self.model = model
+            self.model.to(self.device)
+        else:
+            self.model = test_model(model_name, device_preference=device_preference)
+            
         self.model.eval()
         
         # Get image size
