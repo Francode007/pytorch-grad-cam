@@ -48,9 +48,21 @@ def main():
     parser.add_argument("--images-path", type=str, default="imagenet_val_sample", help="Path to images")
     parser.add_argument("--count", type=int, default=500, help="Number of images to process")
     parser.add_argument("--output-dir", type=str, default="enhanced_results", help="Output directory")
-    parser.add_argument("--compare", action="store_true", help="Run comparison against standard CAM methods")
+    parser.add_argument("--base-cam", type=str, default="GradCAM",
+                        choices=["GradCAM", "GradCAM++", "HiResCAM", "ScoreCAM", "AblationCAM"],
+                        help="Base CAM method to use for enhancement")
     
     args = parser.parse_args()
+    
+    # Map base-cam to enhanced class name
+    base_cam_map = {
+        "GradCAM": "GradCAMEnhanced",
+        "GradCAM++": "GradCAMPlusPlusEnhanced",
+        "HiResCAM": "HiResCAMEnhanced",
+        "ScoreCAM": "ScoreCAMEnhanced",
+        "AblationCAM": "AblationCAMEnhanced"
+    }
+    enhanced_cam_name = base_cam_map[args.base_cam]
     
     # 1. Setup Config
     metrics_config = {
@@ -60,7 +72,7 @@ def main():
         "soft": True # Default to soft for now
     }
     
-    print(f"Running Experiment: {args.model} | Method: {args.method} | Config: {metrics_config}")
+    print(f"Running Experiment: {args.model} | Method: {args.method} ({args.base_cam}) | Config: {metrics_config}")
 
     # 2. Load Model
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -85,7 +97,7 @@ def main():
         model=model,
         model_name=args.model,
         conv_layers=target_layers, # all layers
-        cam_method="GradCAMEnhanced", # or others
+        cam_method=enhanced_cam_name,
         device_preference=device,
         aggregation_config=metrics_config
     )
