@@ -10,3 +10,4 @@ scikit-learn
 timm
 pandas
 pyarrow
+datasets
