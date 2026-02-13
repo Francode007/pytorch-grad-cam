@@ -67,7 +67,9 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                  device_preference: str = "auto",
                  layer_mode: str = "last",
                  enhanced_cam_method: str = "GradCAMEnhanced",
-                 model_cache_dir: str = "../pytorch_models/"):
+                 model_cache_dir: str = "../pytorch_models/",
+                 extractor_cls=None,
+                 extractor_kwargs: dict = None):
         """
         Initialize the ImageNet evaluator.
         
@@ -78,6 +80,8 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             layer_mode: Layer selection mode ("last", "last_5", "all")
             enhanced_cam_method: Enhanced CAM method to use
             model_cache_dir: Directory containing pre-downloaded models (default: "../pytorch_models/")
+            extractor_cls: Optional custom extractor class (default: OptimizedCamExtractor)
+            extractor_kwargs: Optional kwargs for the extractor
         """
         # Don't call super().__init__() to avoid loading custom models
         # Instead, initialize only what we need from the base class
@@ -96,6 +100,8 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         self.imagenet_path = imagenet_path
         self.layer_mode = layer_mode
         self.enhanced_cam_method = enhanced_cam_method
+        self.extractor_cls = extractor_cls or OptimizedCamExtractor
+        self.extractor_kwargs = extractor_kwargs or {}
         
         # Load synset mapping
         self.synset_mapping = self._load_synset_mapping()
@@ -636,12 +642,13 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
     def extract_enhanced_cam(self, image_path: str, predicted_label: int) -> Tuple[torch.Tensor, np.ndarray]:
         """Extract Enhanced CAM for a single ImageNet image."""
         if self.enhanced_cam_extractor is None:
-            self.enhanced_cam_extractor = OptimizedCamExtractor(
+            self.enhanced_cam_extractor = self.extractor_cls(
                 self.model, 
                 self.model_name, 
                 self.conv_layers,
                 cam_method=self.enhanced_cam_method,
-                device_preference=str(self.device)
+                device_preference=str(self.device),
+                **self.extractor_kwargs
             )
         
         # Extract Enhanced CAM
