@@ -172,15 +172,23 @@ def main():
 
                 # 3. Compute Metrics
                 try:
+                    import gc
                     img_tensor_for_eval = img_tensor_in.unsqueeze(0) if img_tensor_in.dim() == 3 else img_tensor_in
                     
-                    _, ins_auc = evaluator.compute_insertion_auc(img_tensor_for_eval, cam_np, pred_idx)
-                    _, del_auc = evaluator.compute_deletion_auc(img_tensor_for_eval, cam_np, pred_idx)
+                    # Optimize: Use larger step_size for faster evaluation (e.g., 2240 pixels per step ~ 22 steps instead of 224)
+                    _, ins_auc = evaluator.compute_insertion_auc(img_tensor_for_eval, cam_np, pred_idx, step_size=2240)
+                    _, del_auc = evaluator.compute_deletion_auc(img_tensor_for_eval, cam_np, pred_idx, step_size=2240)
                     road_score = evaluator.evaluate_road(img_tensor_for_eval, cam_np, pred_idx)
                     
                     all_metrics[method]['insertion'].append(ins_auc)
                     all_metrics[method]['deletion'].append(del_auc)
                     all_metrics[method]['road'].append(road_score)
+                    
+                    # Force Cleanup
+                    del img_tensor_for_eval
+                    if method == args.method:
+                         del cam
+                    gc.collect()
                     
                 except Exception as e:
                     tqdm.write(f"  Error computing metrics for {method}: {e}")
