@@ -41,9 +41,10 @@ def main():
     parser = argparse.ArgumentParser(description="Run Enhanced XAI Experiments")
     parser.add_argument("--model", type=str, default="resnet50", help="Model name")
     parser.add_argument("--method", type=str, default="stagewise", 
-                        choices=["standard", "stagewise", "topk", "temp"],
+                        choices=["standard", "stagewise", "topk", "temp", "pyramid"],
                         help="Aggregation method")
     parser.add_argument("--k", type=int, default=5, help="Top-K parameter")
+    parser.add_argument("--k-percent", type=float, default=0.15, help="Top-K Percent for Pyramid method")
     parser.add_argument("--temp", type=float, default=0.1, help="Temperature parameter")
     parser.add_argument("--images-path", type=str, default="imagenet_val_sample", help="Path to images")
     parser.add_argument("--count", type=int, default=500, help="Number of images to process")
@@ -51,6 +52,7 @@ def main():
     parser.add_argument("--base-cam", type=str, default="GradCAM",
                         choices=["GradCAM", "GradCAM++", "HiResCAM", "ScoreCAM", "AblationCAM"],
                         help="Base CAM method to use for enhancement")
+    parser.add_argument("--compare", action="store_true", help="Compare with standard methods")
     
     args = parser.parse_args()
     
@@ -68,6 +70,7 @@ def main():
     metrics_config = {
         "type": args.method,
         "k": args.k,
+        "k_percent": args.k_percent,
         "temp": args.temp,
         "soft": True # Default to soft for now
     }

@@ -190,5 +190,107 @@ class EnhancedCAMAggregator:
         elif m_type == "temp":
             return EnhancedCAMAggregator.aggregate_temperature(cams, scores, 
                                                                temp=method_config.get("temp", 1.0))
+        elif m_type == "pyramid":
+             return EnhancedCAMAggregator.aggregate_pyramid_fusion(cams, scores, layer_shapes, method_config)
         else:
             return EnhancedCAMAggregator.aggregate_standard(cams, scores)
+
+    @staticmethod
+    def aggregate_pyramid_fusion(cams: List[torch.Tensor], 
+                                 scores: np.ndarray, 
+                                 layer_shapes: List[Tuple[int, int]],
+                                 config: Dict) -> torch.Tensor:
+        """
+        Pyramid Fusion CAM (PF-CAM) Implementation.
+        
+        Logic:
+        1. Group layers by Stage (Resolution).
+        2. Within each stage, select Top-K layers (based on config).
+        3. Compute normalized "Stage CAM" for each stage.
+        4. Fuse Stage CAMs Top-Down (Deep -> Shallow) using Gating.
+        """
+        
+        # 1. Group layers by shape (Stage Detection)
+        # We assume smaller shape = Deeper stage.
+        # stages: dict { shape: [indices] }
+        stages = {}
+        for idx, shape in enumerate(layer_shapes):
+            if shape not in stages:
+                stages[shape] = []
+            stages[shape].append(idx)
+            
+        # Sort stages by resolution (Smallest/Deepest first)
+        # shape is (H, W). We use H*W as proxy for resolution.
+        sorted_shapes = sorted(stages.keys(), key=lambda s: s[0]*s[1])
+        
+        stage_cams = []
+        
+        # 2. Process each stage
+        for shape in sorted_shapes:
+            indices = stages[shape]
+            stage_layer_scores = scores[indices]
+            stage_layer_cams = [cams[i] for i in indices]
+            
+            # --- Top-K Selection per Stage ---
+            k_percent = config.get("k_percent", 0.15) # Default Top 15%
+            k_min = config.get("k_min", 2)
+            
+            num_layers = len(indices)
+            k = max(k_min, int(num_layers * k_percent))
+            k = min(k, num_layers) # Safety
+            
+            # Use aggregate_top_k helper for intra-stage aggregation
+            # We treat the stage as a mini-aggregation problem
+            # Normalized within stage
+            stage_cam = EnhancedCAMAggregator.aggregate_top_k(
+                stage_layer_cams, 
+                stage_layer_scores, 
+                k=k, 
+                soft=True, 
+                temp=config.get("temp", 0.1) # Sharp softmax for selection
+            )
+            
+            # --- Energy Normalization ---
+            # Max-Normalize first to get to 0-1 range
+            if stage_cam.max() > 1e-7:
+                stage_cam = stage_cam / stage_cam.max()
+            
+            # Scale by Energy Factor? 
+            # If we want to penalize high-res, we could divide by resolution.
+            # But "masking" in Top-Down fusion handles the noise.
+            # So simple 0-1 normalization per stage is good enough for now.
+            
+            stage_cams.append(stage_cam)
+            
+        # 3. Top-Down Fusion (Gating)
+        # stage_cams[0] is Deepest (C4), stage_cams[-1] is Shallowest (C1)
+        
+        fused_cam = stage_cams[0]
+        
+        for i in range(1, len(stage_cams)):
+            next_stage_cam = stage_cams[i] # Shallower
+            
+            # Create Gate from current fused (Deep)
+            # Sigmoid-like gate to determine "Objectness"
+            # Since fused_cam is 0-1, we can just use it directly or apply sigmoid if it's logits.
+            # It's already CAM (ReLU'd usually), so it's positive.
+            # Let's simple normalize to use as probability mask.
+            gate = fused_cam.clone()
+            if gate.max() > 1e-7:
+               gate = gate / gate.max()
+            
+            # Apply Gate to Shallow Details
+            # "Show me details (next_stage) only where object exists (gate)"
+            masked_details = next_stage_cam * gate
+            
+            # Add to formulation
+            # fused = fused + masked_details
+            # We might want to weight them? 
+            # fused = fused + 0.5 * masked_details
+            fused_cam = fused_cam + masked_details
+            
+            # Renormalize after addition to keep valid range for next gate
+            if fused_cam.max() > 1e-7:
+                fused_cam = fused_cam / fused_cam.max()
+                
+        return fused_cam

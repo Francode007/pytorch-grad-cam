@@ -108,7 +108,12 @@ def get_model_target_layers(model: nn.Module, model_name: str, all_layers: bool 
         layers = []
         if 'resnet' in model_name:
             # ResNet has 4 layers: layer1, layer2, layer3, layer4
-            layers.extend([model.layer1[-1], model.layer2[-1], model.layer3[-1], model.layer4[-1]])
+            # Return ALL bottleneck blocks for true "all layers" analysis
+            for layer_name in ['layer1', 'layer2', 'layer3', 'layer4']:
+                layer_container = getattr(model, layer_name)
+                # Add each bottleneck block
+                for i in range(len(layer_container)):
+                    layers.append(layer_container[i])
         elif 'vgg' in model_name:
              # VGG features are sequential, take every MaxPool or just all Convs?
              # Standard practice for layer-wise is usually the end of blocks.
