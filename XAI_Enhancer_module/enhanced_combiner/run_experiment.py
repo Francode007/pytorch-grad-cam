@@ -58,6 +58,10 @@ def main():
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", 
                         help="Device to run on (cuda/cpu)")
     
+    parser.add_argument("--layer-mode", type=str, default="last", choices=["last", "last_5", "all"],
+                        help="Layer selection mode for CAM")
+    parser.add_argument("--step-size", type=int, default=224, help="Step size for AUC evaluation")
+    
     args = parser.parse_args()
     
     # Credentials
@@ -82,7 +86,7 @@ def main():
         "soft": True
     }
     
-    print(f"Running Experiment: {args.model} | Method: {args.method} ({args.base_cam}) | Config: {metrics_config}")
+    print(f"Running Experiment: {args.model} | Method: {args.method} ({args.base_cam}) | Layers: {args.layer_mode} | Config: {metrics_config}")
     
     # Calculate paths relative to script location
     script_dir = Path(__file__).resolve().parent
@@ -98,9 +102,6 @@ def main():
     else:
          imagenet_path = args.images_path
     
-    print(f"Model Cache Directory: {model_cache_dir}")
-    print(f"ImageNet Path: {imagenet_path}")
-    
     # Initialize Evaluator with Custom Extractor
     evaluator = ImageNetProperAUCEvaluator(
         model_name=args.model,
@@ -109,6 +110,7 @@ def main():
         enhanced_cam_method=enhanced_cam_name,
         model_cache_dir=model_cache_dir,
         extractor_cls=EnhancedExtractorV2,
+        layer_mode=args.layer_mode,  # Pass layer mode
         extractor_kwargs={'aggregation_config': metrics_config}
     )
     
@@ -129,14 +131,14 @@ def main():
         chunk_results = []
         
         # 1. Enhanced Method
-        print(f"--- Evaluating {args.method} ---")
+        print(f"--- Evaluating {args.method} (Mode: {args.layer_mode}) ---")
         enhanced_res = evaluator.evaluate_enhanced_cam(
             start_index=start_idx,
             end_index=end_idx,
             max_images=-1, # Controlled by start/end index
             batch_size=args.gpu_batch_size, # GPU batch size for metrics
             verbose=False,
-            step_size=224 # Faster evaluation
+            step_size=args.step_size # Faster evaluation
         )
         
         chunk_results.append({
@@ -152,50 +154,57 @@ def main():
         
         # 2. Standard Methods (Compare)
         if args.compare:
-            print(f"--- Evaluating Standard Methods ---")
+            print(f"--- Evaluating Standard Methods (Mode: last) ---")
             standard_methods = ["GradCAM", "GradCAM++", "HiResCAM"]
             
-            # Using evaluator's method, but we need to loop manually if we want chunked reporting for them per-chunk
-            # ImageNetProperAUCEvaluator.evaluate_method takes start/end index logic (via get_imagenet_images call inside? No wait)
-            # evaluate_method calls proper_auc_evaluation.evaluate_method which uses `get_imagenet_images` from ImageNet subclass?
-            # NO. `evaluate_method` in `ProperAUCEvaluator` calls `get_validation_paths`.
-            # `ImageNetProperAUCEvaluator` REPLACES `evaluate_method`? NO, it inherits.
-            # BUT `ImageNetProperAUCEvaluator` DOES NOT override `evaluate_method`.
-            # `evaluate_method` in BASE `ProperAUCEvaluator` uses `get_validation_paths(TRAIN_DATA_PATH)`.
-            # THIS IS A BUG IN THE EXISTING `ImageNetProperAUCEvaluator` IF IT RELIES ON BASE `evaluate_method` for standard cams!
-            # The base `evaluate_method` uses hardcoded `TRAIN_DATA_PATH`.
+            # Switch to 'last' layer mode for standard methods (fair comparison)
+            original_layer_mode = evaluator.layer_mode
+            if evaluator.layer_mode != "last":
+                evaluator.layer_mode = "last"
+                evaluator.conv_layers = evaluator._get_enhanced_cam_layers("last")
+                evaluator.enhanced_cam_extractor = None # Force re-init using new layers
             
-            # Let's check `imagenet_evaluation.py`. It calls `evaluator.evaluate_method`.
-            # And `ImageNetProperAUCEvaluator` DOES NOT override it.
-            # Base `evaluate_method` in `proper_auc_evaluation.py`:
-            #   all_image_paths = get_validation_paths(TRAIN_DATA_PATH)
-            
-            # This means `evaluate_standard_methods` in `imagenet_evaluation.py` MIGHT BE BROKEN if it relies on base class without override,
-            # OR `ImageNetProperAUCEvaluator` relies on `evaluate_enhanced_cam` (which is custom) but standard methods?
-            # Wait, `imagenet_evaluation.py` calls `suite.evaluator.evaluate_method`.
-            
-            # I MUST MANUALLY IMPLEMENT STANDARD METHOD EVALUATION HERE USING `extract_cam` and the new batch metrics logic
-            # to ensure it uses the correct images and the optimization.
-            # OR I use `evaluator.evaluate_enhanced_cam` logic but replace the extractor temporarily?
-            # No, `evaluate_enhanced_cam` is hardcoded to use `enhanced_cam_extractor`.
-            
-            # SOLUTION: Implement standard method evaluation loop here reusing `evaluator`'s helper methods.
-            
-            # To be safe and fast, I will only verify proper usage of `ImageNetProperAUCEvaluator` for standard methods if I have time.
-            # But since I need this NOW:
-            # I will assume `compare` is secondary or I will skip detailed implementation for now if it's complex,
-            # BUT the user ASKED for it.
-            
-            # "I want to run it efficiently... I would like to verify if I am running it most efficiently"
-            # "without --compare, will it run just on the pyramid CAM... I only want to focus on PF CAM now by removing the argument --compare"
-            
-            # The user logic implies they might SKIP compare.
-            # So I will prioritize Enhanced.
-            # But if they DO run --compare, it should work.
-            
-            # I will instantiate a temporary evaluator or just re-implement the loop for standard methods using `evaluator.compute_XXX_auc`.
-            pass 
-            # (See below for implementation if I add it)
+            for method in standard_methods:
+                print(f"--- Evaluating Standard {method} ---")
+                
+                # Hack: Update the evaluator's method to point to the standard method wrapper
+                std_cam_name = base_cam_map.get(method, method + "Enhanced")
+                evaluator.enhanced_cam_method = std_cam_name
+                
+                # Update extractor kwargs to be "standard" (no special config)
+                evaluator.extractor_kwargs = {'aggregation_config': {"type": "standard"}}
+                
+                # Reset extractor instance to force re-initialization
+                evaluator.enhanced_cam_extractor = None
+                
+                std_res = evaluator.evaluate_enhanced_cam(
+                    start_index=start_idx,
+                    end_index=end_idx,
+                    max_images=-1,
+                    batch_size=args.gpu_batch_size,
+                    verbose=False,
+                    step_size=args.step_size
+                )
+                
+                chunk_results.append({
+                    'Method': method,
+                    'Insertion_Mean': std_res['insertion_auc_mean'],
+                    'Insertion_Std': std_res['insertion_auc_std'],
+                    'Deletion_Mean': std_res['deletion_auc_mean'],
+                    'Deletion_Std': std_res['deletion_auc_std'],
+                    'ROAD_Mean': std_res['road_mean'],
+                    'ROAD_Std': std_res['road_std'],
+                    'Images_Evaluated': std_res['num_images']
+                })
+                
+            # Restore original configuration
+            evaluator.enhanced_cam_method = enhanced_cam_name
+            evaluator.extractor_kwargs = {'aggregation_config': metrics_config}
+            # Restore layer mode if changed
+            if original_layer_mode != "last":
+                evaluator.layer_mode = original_layer_mode
+                evaluator.conv_layers = evaluator._get_enhanced_cam_layers(original_layer_mode)
+            evaluator.enhanced_cam_extractor = None
         
         # Append to CSV
         df_chunk = pd.DataFrame(chunk_results)

@@ -262,31 +262,36 @@ class EnhancedCAMAggregator:
             
             stage_cams.append(stage_cam)
             
-        # 3. Top-Down Fusion (Gating)
+        # 3. Top-Down Fusion (Soft Gating)
         # stage_cams[0] is Deepest (C4), stage_cams[-1] is Shallowest (C1)
         
         fused_cam = stage_cams[0]
+        
+        # Soft Gating Parameter (Beta)
+        # beta = 1.0 -> No Gating (Sum)
+        # beta = 0.0 -> Hard Gating (Product)
+        # Recommended: 0.3 - 0.5 (Residual-like connection)
+        beta = config.get("beta", 0.4) 
         
         for i in range(1, len(stage_cams)):
             next_stage_cam = stage_cams[i] # Shallower
             
             # Create Gate from current fused (Deep)
             # Sigmoid-like gate to determine "Objectness"
-            # Since fused_cam is 0-1, we can just use it directly or apply sigmoid if it's logits.
-            # It's already CAM (ReLU'd usually), so it's positive.
-            # Let's simple normalize to use as probability mask.
             gate = fused_cam.clone()
             if gate.max() > 1e-7:
                gate = gate / gate.max()
             
-            # Apply Gate to Shallow Details
-            # "Show me details (next_stage) only where object exists (gate)"
-            masked_details = next_stage_cam * gate
+            # Apply Soft Gating
+            # "Allow `beta` of the signal effectively, and then gate the rest"
+            # Formula: Signal * (beta + (1-beta)*Gate)
+            # When Gate=1 (Object), Mask = 1.0.
+            # When Gate=0 (Background), Mask = beta.
+            
+            soft_gate = beta + (1.0 - beta) * gate
+            masked_details = next_stage_cam * soft_gate
             
             # Add to formulation
-            # fused = fused + masked_details
-            # We might want to weight them? 
-            # fused = fused + 0.5 * masked_details
             fused_cam = fused_cam + masked_details
             
             # Renormalize after addition to keep valid range for next gate
