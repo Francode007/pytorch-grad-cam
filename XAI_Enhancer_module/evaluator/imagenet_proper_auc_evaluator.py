@@ -154,7 +154,6 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         Optimized with batch processing and AMP.
         """
         # Import necessary functions
-        from torch.cuda.amp import autocast
         import torch
         import numpy as np
         
@@ -189,7 +188,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         # Pre-calculate baseline confidence
         with torch.no_grad():
             if self.device.type == 'cuda':
-                with autocast():
+                with torch.amp.autocast('cuda'):
                     baseline_output = self.model(baseline_image.unsqueeze(0))
             else:
                 baseline_output = self.model(baseline_image.unsqueeze(0))
@@ -208,7 +207,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                 batch_tensor = torch.stack(batch_list)
                 
                 if self.device.type == 'cuda':
-                    with autocast():
+                    with torch.amp.autocast('cuda'):
                         outputs = self.model(batch_tensor)
                 else:
                     outputs = self.model(batch_tensor)
@@ -253,7 +252,6 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         Optimized with batch processing and AMP.
         """
         # Import necessary functions
-        from torch.cuda.amp import autocast
         import torch
         import numpy as np
         
@@ -287,7 +285,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         with torch.no_grad():
             # Initial confidence with original image
             if self.device.type == 'cuda':
-                with autocast():
+                with torch.amp.autocast('cuda'):
                     original_output = self.model(current_image.unsqueeze(0))
             else:
                 original_output = self.model(current_image.unsqueeze(0))
@@ -306,7 +304,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                 batch_tensor = torch.stack(batch_list)
                 
                 if self.device.type == 'cuda':
-                    with autocast():
+                    with torch.amp.autocast('cuda'):
                         outputs = self.model(batch_tensor)
                 else:
                     outputs = self.model(batch_tensor)
@@ -358,7 +356,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         Returns:
             Dictionary mapping "road_{threshold}" to the score.
         """
-        from torch.cuda.amp import autocast
+
         import torch
         import numpy as np
         import torchvision.transforms.functional as TF
@@ -415,7 +413,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         self.model.eval()
         with torch.no_grad():
             if self.device.type == 'cuda':
-                with autocast():
+                with torch.amp.autocast('cuda'):
                     outputs = self.model(batch_tensor)
             else:
                 outputs = self.model(batch_tensor)
