@@ -44,7 +44,7 @@ def main():
     # Setup Paths
     script_dir = Path(__file__).resolve().parent
     project_root = script_dir.parent.parent
-    model_cache_dir = str(project_root / "pytorch_models")
+    model_cache_dir = str(project_root / "XAI_Enhancer_module" / "pytorch_models")
     
     if args.images_path == "imagenet_val_sample":
          imagenet_path = str(project_root / "XAI_Enhancer_module" / "imagenet_val_sample")

@@ -103,8 +103,8 @@ def main():
     script_dir = Path(__file__).resolve().parent
     project_root = script_dir.parent.parent
     
-    # Model Cache Directory (Project Root / pytorch_models)
-    model_cache_dir = str(project_root / "pytorch_models")
+    # Model Cache Directory (Project Root / XAI_Enhancer_module / pytorch_models)
+    model_cache_dir = str(project_root / "XAI_Enhancer_module" / "pytorch_models")
     
     # ImageNet Path (Project Root / XAI_Enhancer_module / imagenet_val_sample)
     # Allow override via args, but default relative to project root if simple name
