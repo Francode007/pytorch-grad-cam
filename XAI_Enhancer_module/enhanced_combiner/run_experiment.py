@@ -44,8 +44,8 @@ def main():
                         choices=["standard", "stagewise", "topk", "temp", "pyramid"],
                         help="Aggregation method")
     parser.add_argument("--k", type=int, default=5, help="Top-K parameter")
-    parser.add_argument("--k-percent", type=float, default=0.15, help="Top-K Percent for Pyramid method")
-    parser.add_argument("--temp", type=float, default=0.1, help="Temperature parameter")
+    parser.add_argument("--k-percent", type=float, default=0.2, help="Top-K Percent for Pyramid method")
+    parser.add_argument("--temp", type=float, default=0.05, help="Temperature parameter")
     parser.add_argument("--images-path", type=str, default="imagenet_val_sample", help="Path to images")
     parser.add_argument("--count", type=int, default=500, help="Total number of images to process")
     parser.add_argument("--batch-size", type=int, default=1000, help="Reporting/Restart chunk size")
@@ -61,11 +61,18 @@ def main():
     parser.add_argument("--layer-mode", type=str, default="last", choices=["last", "last_5", "all"],
                         help="Layer selection mode for CAM")
     parser.add_argument("--step-size", type=int, default=224, help="Step size for AUC evaluation")
+    parser.add_argument("--beta", type=float, default=0.3, help="Soft Gating Beta for Pyramid method")
     
     args = parser.parse_args()
     
     # Credentials
     email_to, email_sender, email_password = setup_credentials()
+
+    # Enforce layer_mode='all' for pyramid method if default 'last' is still set
+    # Pyramid Fusion requires multiple layers to work.
+    if args.method == "pyramid" and args.layer_mode == "last":
+        print("INFO: 'pyramid' method requires multiple layers. Switching --layer-mode from 'last' to 'all'.")
+        args.layer_mode = "all"
     
     # Map base-cam to enhanced class name
     base_cam_map = {
@@ -83,6 +90,7 @@ def main():
         "k": args.k,
         "k_percent": args.k_percent,
         "temp": args.temp,
+        "beta": args.beta,
         "soft": True
     }
     
@@ -92,8 +100,8 @@ def main():
     script_dir = Path(__file__).resolve().parent
     project_root = script_dir.parent.parent
     
-    # Model Cache Directory (Project Root / XAI_Enhancer_module / pytorch_models)
-    model_cache_dir = str(project_root / "XAI_Enhancer_module" / "pytorch_models")
+    # Model Cache Directory (Project Root / pytorch_models)
+    model_cache_dir = str(project_root / "pytorch_models")
     
     # ImageNet Path (Project Root / XAI_Enhancer_module / imagenet_val_sample)
     # Allow override via args, but default relative to project root if simple name
@@ -241,7 +249,18 @@ def main():
     # Final Summary
     print("\n" + "="*60)
     print("FINAL RESULTS")
-    print(pd.DataFrame(all_results).to_string(index=False))
+    final_df = pd.DataFrame(all_results)
+    print(final_df.to_string(index=False))
+    
+    # Final Email with Full CSV
+    if email_password and not final_df.empty:
+        subject = f"Experiment Complete: {args.model} | {args.method} vs Standard"
+        body = f"Experiment completed for {len(final_df)} entries.\n\nSummary:\n{final_df.groupby('Method')[['Insertion_Mean', 'Deletion_Mean', 'ROAD_Mean']].mean().to_string()}\n\nFull CSV Data:\n{final_df.to_csv(index=False)}"
+        try:
+            send_email_notification(email_to, subject, body, email_sender, email_password)
+            print("Final results email sent.")
+        except Exception as e:
+            print(f"Failed to send final email: {e}")
 
 if __name__ == "__main__":
     main()
