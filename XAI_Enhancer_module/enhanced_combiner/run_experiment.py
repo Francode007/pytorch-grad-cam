@@ -92,15 +92,32 @@ def main():
     script_dir = Path(__file__).resolve().parent
     project_root = script_dir.parent.parent
     
-    # Model Cache Directory (Project Root / pytorch_models)
-    model_cache_dir = str(project_root / "pytorch_models")
+    # Model Cache Directory (Project Root / XAI_Enhancer_module / pytorch_models)
+    model_cache_dir = str(project_root / "XAI_Enhancer_module" / "pytorch_models")
     
-    # ImageNet Path (Project Root / imagenet_val_sample)
+    # ImageNet Path (Project Root / XAI_Enhancer_module / imagenet_val_sample)
     # Allow override via args, but default relative to project root if simple name
     if args.images_path == "imagenet_val_sample":
-         imagenet_path = str(project_root / "imagenet_val_sample")
+         imagenet_path = str(project_root / "XAI_Enhancer_module" / "imagenet_val_sample")
     else:
          imagenet_path = args.images_path
+    
+    # Path Validation
+    if not os.path.exists(imagenet_path):
+        print(f"Error: ImageNet path not found: {imagenet_path}")
+        sys.exit(1)
+        
+    if not os.path.isdir(imagenet_path):
+        print(f"Error: ImageNet path must be a directory: {imagenet_path}")
+        sys.exit(1)
+
+    # Check if directory is empty
+    if not os.listdir(imagenet_path):
+        print(f"Error: ImageNet directory is empty: {imagenet_path}")
+        sys.exit(1)
+
+    print(f"Model Cache Directory: {model_cache_dir}")
+    print(f"ImageNet Path: {imagenet_path}")
     
     # Initialize Evaluator with Custom Extractor
     evaluator = ImageNetProperAUCEvaluator(
