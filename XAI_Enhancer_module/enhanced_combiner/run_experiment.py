@@ -75,6 +75,9 @@ def main():
         args.layer_mode = "all"
     
     # Map base-cam to enhanced class name
+    # NOTE: We use "Enhanced" versions (e.g. GradCAMEnhanced) as wrappers for BOTH
+    # enhanced and standard methods. When running "standard", the wrapper
+    # acts as a pass-through to emulate the vanilla method (effectively standard GradCAM).
     base_cam_map = {
         "GradCAM": "GradCAMEnhanced",
         "GradCAM++": "GradCAMPlusPlusEnhanced",
@@ -191,6 +194,7 @@ def main():
             
             for method in standard_methods:
                 print(f"--- Evaluating Standard {method} ---")
+                print(f"    (Note: Using {method}Enhanced wrapper in 'standard' mode to emulate vanilla {method})")
                 
                 # Hack: Update the evaluator's method to point to the standard method wrapper
                 std_cam_name = base_cam_map.get(method, method + "Enhanced")
