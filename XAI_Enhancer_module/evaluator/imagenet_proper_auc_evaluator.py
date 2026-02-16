@@ -7,8 +7,9 @@ This module extends the base ProperAUCEvaluator to work with ImageNet validation
 import sys
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Union
 from tqdm import tqdm
 from pathlib import Path
 import pandas as pd
@@ -19,6 +20,7 @@ import torchvision.transforms as transforms
 import torchvision.models as models
 from torch.utils.data import Dataset, DataLoader
 import time
+import json
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -117,8 +119,13 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         self.model = self.model_loader.load_pretrained_model(model_name)
         self.model.eval()
         
+        # Load a CLEAN model for metrics (to avoid hook overhead from CAM extractor)
+        self.clean_model = self.model_loader.load_pretrained_model(model_name)
+        self.clean_model.eval()
+        
         # Move model to device
         self.model = self.model.to(self.device)
+        self.clean_model = self.clean_model.to(self.device)
         
         # Initialize Enhanced CAM components
         self.conv_layers = self._get_enhanced_cam_layers(layer_mode)
@@ -148,15 +155,12 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
     
     def compute_insertion_auc(self, image_tensor: torch.Tensor, 
                             saliency_map: np.ndarray, predicted_label: int,
-                            step_size: int = 50, batch_size: int = 64) -> Tuple[List[float], float]:
+                            step_size: int = 50, batch_size: int = 2048) -> Tuple[List[float], float]:
         """
         Compute insertion AUC by progressively adding pixels in order of importance.
-        Optimized with batch processing and AMP.
+        Optimized with full vectorization for large batch processing.
         """
-        # Import necessary functions
-        import torch
-        import numpy as np
-        
+        t0 = time.time()
         # Ensure image tensor is 3D [C, H, W]
         image_tensor = image_tensor.to(self.device)
         if image_tensor.dim() == 4:
@@ -166,95 +170,75 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         if len(saliency_map.shape) == 3:
             saliency_map = saliency_map[0]  # Take first channel if RGB
         
-        # Flatten saliency map and get pixel indices sorted by importance
+        # 1. Flatten saliency map and get pixel indices sorted by importance
         flat_saliency = saliency_map.flatten()
-        # pixel_indices = np.argsort(flat_saliency)[::-1]  # Descending order
-        # Use torch for indices to avoid host-device sync during loop
-        pixel_indices_np = np.argsort(flat_saliency)[::-1].copy()
-        pixel_indices = torch.from_numpy(pixel_indices_np).to(self.device).long()
+        pixel_indices_np = np.argsort(flat_saliency)[::-1]  # Descending order, high to low
         
-        # Create baseline image (black) on the correct device
-        baseline_image = torch.zeros_like(image_tensor, device=self.device)
+        c, h, w = image_tensor.shape
+        n_pixels = h * w
+        pixel_indices = torch.from_numpy(pixel_indices_np.copy()).to(self.device).long()
         
-        # Progressively add pixels and measure confidence
+        # 2. Determine steps
+        steps = list(range(0, n_pixels, step_size))
+        if steps[-1] != n_pixels:
+            steps.append(n_pixels)
+        
+        num_steps = len(steps)
+        t1 = time.time()
+        
+        # 3. Create a Rank Map for Vectorized Masking
+        # We want to find pixels where rank < threshold
+        rank_map_flat = torch.zeros(n_pixels, device=self.device, dtype=torch.long)
+        rank_indices = pixel_indices
+        rank_values = torch.arange(n_pixels, device=self.device)
+        rank_map_flat[rank_indices] = rank_values
+        
+        # Reshape to 2D [H, W]
+        rank_map = rank_map_flat.view(1, h, w) 
+        
+        # Create Thresholds Tensor [num_steps, 1, 1]
+        thresholds = torch.tensor(steps, device=self.device).view(-1, 1, 1)
+        
+        # Create Masks [num_steps, 1, H, W]
+        masks = (rank_map < thresholds).unsqueeze(1) # [num_steps, 1, H, W]
+        t2 = time.time()
+        
+        
+        # 4. Generate Batch of Modified Images [num_steps, C, H, W]
+        batch_tensor = image_tensor.unsqueeze(0) * masks.float()
+        if self.device.type == 'cuda': torch.cuda.synchronize()
+        
+        # 5. Run Batched Inference
         confidences = []
-        n_pixels = len(pixel_indices)
+        self.clean_model.eval()
         
-        # Prepare for batch processing
-        current_image = baseline_image.clone()
-        original_flat = image_tensor.view(image_tensor.shape[0], -1)
-        current_flat = current_image.view(current_image.shape[0], -1)
+        # Process in chunks of 'batch_size'
+        for i in range(0, num_steps, batch_size):
+            end_idx = min(i + batch_size, num_steps)
+            mini_batch = batch_tensor[i:end_idx]
+            
+            with torch.no_grad():
+                outputs = self.clean_model(mini_batch)
+                
+                # Get probabilities for target class
+                batch_confidences = torch.softmax(outputs, dim=1)[:, predicted_label]
+                confidences.extend(batch_confidences.tolist())
         
-        # Pre-calculate baseline confidence
-        with torch.no_grad():
-            if self.device.type == 'cuda':
-                with torch.amp.autocast('cuda'):
-                    baseline_output = self.model(baseline_image.unsqueeze(0))
-            else:
-                baseline_output = self.model(baseline_image.unsqueeze(0))
-                
-            baseline_confidence = torch.softmax(baseline_output, dim=1)[0, predicted_label].item()
-            confidences.append(baseline_confidence)
-            
-            # Create batches of modified images
-            modified_images_batch = []
-            
-            # Helper to process a batch
-            def process_batch(batch_list):
-                if not batch_list:
-                    return []
-                
-                batch_tensor = torch.stack(batch_list)
-                
-                if self.device.type == 'cuda':
-                    with torch.amp.autocast('cuda'):
-                        outputs = self.model(batch_tensor)
-                else:
-                    outputs = self.model(batch_tensor)
-                    
-                batch_confidences = torch.softmax(outputs, dim=1)[:, predicted_label].tolist()
-                return batch_confidences
-
-            for i in range(0, n_pixels, step_size):
-                # Update the CURRENT image state for this step
-                end_idx = min(i + step_size, n_pixels)
-                
-                # We need to efficiently update the pixels
-                # Using numpy for indexing is faster for CPU but we are on GPU tensors
-                # Let's collect indices for this step
-                step_indices = pixel_indices[i:end_idx]
-                
-                # Update current_flat with original pixels at these indices
-                # Note: current_flat is a view of current_image, so modification is in-place
-                current_flat[:, step_indices] = original_flat[:, step_indices]
-                
-                # Add a copy of the current state to the batch
-                modified_images_batch.append(current_image.clone())
-                
-                # If batch is full, process it
-                if len(modified_images_batch) >= batch_size:
-                    confidences.extend(process_batch(modified_images_batch))
-                    modified_images_batch = []
-            
-            # Process remaining items in batch
-            if modified_images_batch:
-                confidences.extend(process_batch(modified_images_batch))
+        if self.device.type == 'cuda': torch.cuda.synchronize()
         
-        # Calculate AUC
+        # 6. Calculate AUC
+        if not confidences:
+            return [], 0.0
+            
         auc = float(np.trapz(confidences)) / len(confidences)
         return confidences, auc
-
     def compute_deletion_auc(self, image_tensor: torch.Tensor, 
-                           saliency_map: np.ndarray, predicted_label: int,
-                           step_size: int = 50, batch_size: int = 64) -> Tuple[List[float], float]:
+                            saliency_map: np.ndarray, predicted_label: int,
+                            step_size: int = 50, batch_size: int = 2048) -> Tuple[List[float], float]:
         """
         Compute deletion AUC by progressively removing pixels in order of importance.
-        Optimized with batch processing and AMP.
+        Optimized with full vectorization for large batch processing.
         """
-        # Import necessary functions
-        import torch
-        import numpy as np
-        
         # Ensure image tensor is 3D [C, H, W]
         image_tensor = image_tensor.to(self.device)
         if image_tensor.dim() == 4:
@@ -264,78 +248,66 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         if len(saliency_map.shape) == 3:
             saliency_map = saliency_map[0]  # Take first channel if RGB
         
-        # Flatten saliency map and get pixel indices sorted by importance
+        # 1. Flatten saliency map and get pixel indices sorted by importance
         flat_saliency = saliency_map.flatten()
-        # pixel_indices = np.argsort(flat_saliency)[::-1]  # Descending order
-        pixel_indices_np = np.argsort(flat_saliency)[::-1].copy()
-        pixel_indices = torch.from_numpy(pixel_indices_np).to(self.device).long()
+        pixel_indices_np = np.argsort(flat_saliency)[::-1]  # Descending order, high to low
         
-        # Start with original image on the correct device
-        current_image = image_tensor.clone().to(self.device)
+        c, h, w = image_tensor.shape
+        n_pixels = h * w
+        pixel_indices = torch.from_numpy(pixel_indices_np.copy()).to(self.device).long()
         
-        # Progressively remove pixels and measure confidence
+        # 2. Determine steps
+        steps = list(range(0, n_pixels, step_size))
+        if steps[-1] != n_pixels:
+            steps.append(n_pixels)
+        
+        num_steps = len(steps)
+        
+        # 3. Create a Rank Map for Vectorized Masking
+        rank_map_flat = torch.zeros(n_pixels, device=self.device, dtype=torch.long)
+        rank_indices = pixel_indices
+        rank_values = torch.arange(n_pixels, device=self.device)
+        rank_map_flat[rank_indices] = rank_values
+        
+        # Reshape to 2D [H, W]
+        rank_map = rank_map_flat.view(1, h, w) 
+        
+        # Create Thresholds Tensor [num_steps, 1, 1]
+        thresholds = torch.tensor(steps, device=self.device).view(-1, 1, 1)
+        
+        # Create Masks [num_steps, 1, H, W]
+        # For deletion, we want to KEEP pixels where rank >= count
+        # (i.e. we remove pixels with rank 0, 1, ..., count-1)
+        # So we keep if rank >= threshold
+        masks = (rank_map >= thresholds).unsqueeze(1) # [num_steps, 1, H, W]
+        
+        # 4. Generate Batch of Modified Images [num_steps, C, H, W]
+        batch_tensor = image_tensor.unsqueeze(0) * masks.float()
+        
+        # 5. Run Batched Inference
         confidences = []
-        n_pixels = len(pixel_indices)
+        self.clean_model.eval()
         
-        self.model.eval()
-        
-        # Prepare for batch processing
-        current_flat = current_image.view(current_image.shape[0], -1)
-        
-        with torch.no_grad():
-            # Initial confidence with original image
-            if self.device.type == 'cuda':
-                with torch.amp.autocast('cuda'):
-                    original_output = self.model(current_image.unsqueeze(0))
-            else:
-                original_output = self.model(current_image.unsqueeze(0))
-                
-            original_confidence = torch.softmax(original_output, dim=1)[0, predicted_label].item()
-            confidences.append(original_confidence)
+        # Process in chunks of 'batch_size'
+        for i in range(0, num_steps, batch_size):
+            end_idx = min(i + batch_size, num_steps)
+            mini_batch = batch_tensor[i:end_idx]
             
-            # Create batches of modified images
-            modified_images_batch = []
-            
-            # Helper to process a batch
-            def process_batch(batch_list):
-                if not batch_list:
-                    return []
-                
-                batch_tensor = torch.stack(batch_list)
-                
+            with torch.no_grad():
                 if self.device.type == 'cuda':
                     with torch.amp.autocast('cuda'):
-                        outputs = self.model(batch_tensor)
+                        outputs = self.clean_model(mini_batch)
                 else:
-                    outputs = self.model(batch_tensor)
-                    
-                batch_confidences = torch.softmax(outputs, dim=1)[:, predicted_label].tolist()
-                return batch_confidences
-            
-            for i in range(0, n_pixels, step_size):
-                # Remove pixels in order of importance (set to 0)
-                end_idx = min(i + step_size, n_pixels)
+                    outputs = self.clean_model(mini_batch)
                 
-                # Get indices for this step
-                step_indices = pixel_indices[i:end_idx]
-
-                
-                # Set pixels to 0 (remove)
-                current_flat[:, step_indices] = 0
-                
-                # Add a copy of the current state to the batch
-                modified_images_batch.append(current_image.clone())
-                
-                # If batch is full, process it
-                if len(modified_images_batch) >= batch_size:
-                    confidences.extend(process_batch(modified_images_batch))
-                    modified_images_batch = []
-            
-            # Process remaining items in batch
-            if modified_images_batch:
-                confidences.extend(process_batch(modified_images_batch))
+                # Get probabilities for target class
+                batch_confidences = torch.softmax(outputs, dim=1)[:, predicted_label]
+                confidences.extend(batch_confidences.tolist())
         
-        # Calculate AUC
+        # 6. Calculate AUC
+        if not confidences:
+            return [], 0.0
+            
         auc = float(np.trapz(confidences)) / len(confidences)
         return confidences, auc
     
@@ -410,13 +382,13 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         # Process entire batch in one go
         batch_tensor = torch.stack(batch_images)
         
-        self.model.eval()
+        self.clean_model.eval()
         with torch.no_grad():
             if self.device.type == 'cuda':
                 with torch.amp.autocast('cuda'):
-                    outputs = self.model(batch_tensor)
+                    outputs = self.clean_model(batch_tensor)
             else:
-                outputs = self.model(batch_tensor)
+                outputs = self.clean_model(batch_tensor)
                 
             probs = torch.softmax(outputs, dim=1)[:, predicted_label]
             
@@ -618,7 +590,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         """Predict labels for a batch of images"""
         predicted_labels = []
         
-        self.model.eval()
+        self.clean_model.eval()
         with torch.no_grad():
             for image_path in tqdm(image_paths, desc="Predicting labels"):
                 try:
@@ -627,18 +599,18 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                     image_tensor = self.transform(image).unsqueeze(0).to(self.device)
                     
                     # Get prediction
-                    outputs = self.model(image_tensor)
+                    outputs = self.clean_model(image_tensor)
                     predicted_label = torch.argmax(outputs, dim=1).item()
                     predicted_labels.append(predicted_label)
                     
                 except Exception as e:
-                    print(f"Error processing {image_path}: {e}")
+                    print(f"Error processing batch {i} (paths: {image_path_batch}): {e}")
                     predicted_labels.append(0)  # Default to first class
         
         return predicted_labels
     
-    def extract_enhanced_cam(self, image_path: str, predicted_label: int) -> Tuple[torch.Tensor, np.ndarray]:
-        """Extract Enhanced CAM for a single ImageNet image."""
+    def extract_enhanced_cam(self, input_data: Union[str, torch.Tensor], predicted_label: Union[int, List[int]]) -> Tuple[torch.Tensor, np.ndarray]:
+        """Extract Enhanced CAM for a single ImageNet image or Batch."""
         if self.enhanced_cam_extractor is None:
             self.enhanced_cam_extractor = self.extractor_cls(
                 self.model, 
@@ -650,8 +622,9 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             )
         
         # Extract Enhanced CAM
+        # Now accepts batch tensor or path
         image_tensor, saliency_map = self.enhanced_cam_extractor.extract_saliency_map(
-            image_path, predicted_label
+            input_data, predicted_label
         )
         
         # Ensure image tensor has batch dimension
@@ -659,8 +632,8 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             image_tensor = image_tensor.unsqueeze(0)  # Add batch dimension
         
         # Convert saliency map to numpy if it's a tensor
-        if isinstance(saliency_map, torch.Tensor):
-            saliency_map = saliency_map.cpu().numpy()
+        # if isinstance(saliency_map, torch.Tensor):
+        #     saliency_map = saliency_map.cpu().numpy()
         
         return image_tensor, saliency_map
     
@@ -709,7 +682,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         dataset = _ImageNetDataset(image_paths, predicted_labels, class_names, self.transform)
         loader = DataLoader(
             dataset, 
-            batch_size=1,  # Keep batch size 1 for the complex per-image evaluation logic
+            batch_size=min(32, len(dataset)) if len(dataset) > 0 else 1, # Default robust batch size
             num_workers=num_workers,
             pin_memory=True if self.device.type == 'cuda' else False,
             prefetch_factor=2 if num_workers > 0 else None,
@@ -720,103 +693,67 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         progress_desc = "Processing Enhanced CAM"
         
         start_time = time.time()
-        pbar = tqdm(loader, desc=progress_desc, total=len(dataset))
+        images_processed = 0
+        num_batches = len(loader)
+        pbar = tqdm(loader, desc=progress_desc, total=num_batches, unit="batch")
         for i, (image_tensor, predicted_label, class_name, image_path_batch) in enumerate(pbar):
             try:
                 # Unpack batch (size 1)
-                image_tensor = image_tensor.squeeze(0)  # [C, H, W]
-                # Keep as 1-batch tensor for compatibility with extract and evaluate methods
-                # Actually, extract_enhanced_cam typically expects path, but we have tensor now?
-                # Wait, extract_enhanced_cam calls enhanced_cam_extractor.extract_saliency_map(image_path, ...)
-                # The extractor loads the image from path usually. 
-                # Optimization: We can modify extract_saliency_map to accept tensor, OR we continue to pass path.
-                # If we pass path, we reload image. That defeats the purpose of DataLoader prefetching image.
-                # Let's check `extract_enhanced_cam` and `OptimizedCamExtractor`.
-                # `extract_enhanced_cam` takes `image_path`.
-                # We need to change `extract_enhanced_cam` to accept tensor or just use `image_path` from loader.
+                # Unpack batch 
+                # image_tensor: [B, C, H, W]
+                # predicted_label: [B]
+                # image_path_batch: tuple of B paths
                 
-                # If we use `image_path` from loader, we are still doing disk I/O in main thread inside `extract_saliency_map` if it reads file.
-                # However, `OptimizedCamExtractor` likely uses `cv2` or `PIL` to read.
-                # To fully optimize, we should pass the pre-loaded tensor to `extract_enhanced_cam`.
-                
-                # Let's check `extract_enhanced_cam`. It calls `self.enhanced_cam_extractor.extract_saliency_map`.
-                # We can't easily change `OptimizedCamExtractor` as it is in another file I haven't viewed. 
-                # BUT, if `OptimizedCamExtractor` is purely for CAM, it should take a tensor.
-                # If it takes a path, I might be limited.
-                
-                # However, the user asked for MAXIMISING RAM USAGE.
-                # Even if I just pre-load images into RAM with DataLoader, it helps.
-                # But to really help, I should use the tensor from DataLoader.
-                
-                # Let's assume for now I should use the path if I can't change extractor, 
-                # BUT `extract_enhanced_cam` does return `image_tensor` and `saliency_map`.
-                # If I can bypass internal image loading in extractor...
-                
-                # Wait, `extract_enhanced_cam` implementation in THIS file:
-                # def extract_enhanced_cam(self, image_path: str, predicted_label: int) -> Tuple[torch.Tensor, np.ndarray]:
-                #     ...
-                #     image_tensor, saliency_map = self.enhanced_cam_extractor.extract_saliency_map(image_path, predicted_label)
-                #     ...
-                
-                # I should probably just pass the path for now to be safe, as changing the extractor signature might be out of scope or risky without seeing it.
-                # BUT, using DataLoader just for paths is not "maximizing RAM/GPU" much.
-                # The "resize/transform" part is done in workers. That IS useful. 
-                # So if `extract_saliency_map` allows passing a tensor, that's best.
-                # If not, I still save time on `_evaluate_saliency_map` which USES the tensor.
-                # Wait, `_evaluate_saliency_map` takes `image_tensor`.
-                # `evaluate_enhanced_cam` GETS `image_tensor` from `extract_enhanced_cam`.
-                # So `extract_enhanced_cam` does the loading.
-                
-                # CRITICAL: If I use DataLoader to load `image_tensor`, I can pass THAT to `_evaluate_saliency_map`.
-                # But `extract_enhanced_cam` ALSO returns a tensor.
-                # So I would be loading it TWICE: once in DataLoader, once in `extract_enhanced_cam`.
-                # That wastes CPU, but maximizes RAM usage (storing loaded images in queue).
-                # But it doesn't help GPU throughput if we re-load.
-                
-                # Let's look at `evaluate_method` (Standard CAM).
-                # `self._extract_standard_cam(image_path, ...)` -> returns saliency map.
-                # Then `image = Image.open(image_path)... image_tensor = self.transform(image)...`
-                # value: `image_tensor` is used in `_evaluate_saliency_map`.
-                # HERE, using DataLoader IS beneficial because we skip the load/transform in the main loop for evaluation.
-                # `_extract_standard_cam` likely loads image internally too.
-                
-                # For `evaluate_enhanced_cam`:
-                # It calls `extract_enhanced_cam`.
-                
-                # I will proceed with DataLoader yielding tensors.
-                # Even if `extract_enhanced_cam` re-loads, at least `evaluate_standard_methods` acts better?
-                # Actually, `evaluate_enhanced_cam` calls `extract_enhanced_cam` which usually does forward pass.
-                # If I can't optimize `extract_enhanced_cam` interface, I'll still use DataLoader for the "Evaluation" phase (Insertion/Deletion) which uses the tensor.
-                # AND I can pass the DataLoader's tensor to `_evaluate_saliency_map` instead of using the one from `extract_enhanced_cam` (they should be identical).
-                # Wait, `extract_enhanced_cam` returns tensor used for CAM generation. It might be normalized differently?
-                # `ImageNetProperAUCEvaluator` uses standard ImageNet normalization. 
-                # `OptimizedCamExtractor` likely uses the same.
-                
-                # I will use the `image_path` from DataLoader (it returns tuple) to pass to `extract_enhanced_cam`.
-                # And I will use `image_tensor` from DataLoader to pass to `_evaluate_saliency_map`.
-                
-                # ALSO: To maximize RAM, setting `num_workers` high helps.
-                
-                predicted_label = predicted_label.item()
-                image_path = image_path_batch[0]
-                class_name = class_name[0]
+                # Check actual batch size
+                current_batch_size = image_tensor.shape[0]
                 
                 if verbose:
-                    print(f"\n--- Image {i+1}/{len(image_paths)}: {os.path.basename(image_path)} ---")
-                    print(f"    Class: {class_name}")
-                    print(f"    Predicted label: {predicted_label}")
+                    print(f"\n--- Processing Batch {i+1} : {current_batch_size} images ---")
                 
-                # Extract Enhanced CAM (Still might do I/O, hard to avoid without deeper refactor)
-                _, saliency_map = self.extract_enhanced_cam(image_path, predicted_label)
+                # Extract Enhanced CAM (Batched)
+                # We pass the pre-loaded tensor batch directly!
+                # predicted_label needs to be list of ints
+                pred_label_list = predicted_label.tolist()
                 
-                # Use the PRE-FETCHED tensor for evaluation to save time
-                metrics = self._evaluate_saliency_map(
-                    image_tensor, saliency_map, predicted_label, step_size, verbose, batch_size
-                )
+                _, saliency_maps = self.extract_enhanced_cam(image_tensor, pred_label_list)
+                # saliency_maps is [B, H, W] tensor (gpu)
                 
-                insertion_aucs.append(metrics['insertion_auc'])
-                deletion_aucs.append(metrics['deletion_auc'])
-                road_scores.append(metrics.get('road_20', 0.0))
+                # Evaluate Saliency Maps (Batched or Loop)
+                # _evaluate_saliency_map currently handles ONE image.
+                # We need to loop over the batch here, OR refactor _evaluate_saliency_map.
+                # Since metrics (Insertion/Deletion) take [C, H, W] and map [H, W], let's loop for now
+                # BUT the metric computation itself is batched (it creates variants).
+                # So we just run the metric function B times.
+                
+                batch_insertion = []
+                batch_deletion = []
+                batch_road = []
+                
+                saliency_maps_np = saliency_maps.cpu().numpy()
+                
+                for b in range(current_batch_size):
+                    img_t = image_tensor[b]
+                    sal_np = saliency_maps_np[b]
+                    lbl = pred_label_list[b]
+                    
+                    # Run metrics
+                    metrics = self._evaluate_saliency_map(
+                        img_t, sal_np, lbl, step_size, verbose=False, batch_size=batch_size
+                    )
+                    
+                    insertion_aucs.append(metrics['insertion_auc'])
+                    deletion_aucs.append(metrics['deletion_auc'])
+                    # Handle ROAD 
+                    # metrics has 'road_20', etc.
+                    # We average them or store raw? existing code does:
+                    # 'ROAD_Mean': enhanced_res['road_mean']
+                    # So we should gather all keys.
+                    # But wait, original code accumulates results in `all_results`.
+                    # Here we are just creating lists.
+                    
+                    # Let's extract road mean for now
+                    r_mean = np.mean([v for k,v in metrics.items() if k.startswith('road_')])
+                    road_scores.append(r_mean)
                 
                 if verbose:
                     print(f"    Insertion AUC: {metrics['insertion_auc']:.4f}")
@@ -834,21 +771,23 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                     'ROAD': f"{current_road_mean:.3f}"
                 })
                 
-                # Periodic logging for non-verbose mode (every 50 images)
+                images_processed += current_batch_size
+                
+                # Periodic logging for non-verbose mode (every 50 batches)
                 if not verbose and (i + 1) % 50 == 0:
                      elapsed = time.time() - start_time
-                     avg_time_per_img = elapsed / (i + 1)
-                     remaining_imgs = len(dataset) - (i + 1)
+                     avg_time_per_img = elapsed / images_processed
+                     remaining_imgs = len(dataset) - images_processed
                      eta = remaining_imgs * avg_time_per_img
                      
-                     print(f"\n[Batch {i+1}/{len(dataset)}] Means - "
+                     print(f"\n[Batch {i+1}/{num_batches}] {images_processed}/{len(dataset)} images - "
                            f"Ins: {current_ins_mean:.4f}, "
                            f"Del: {current_del_mean:.4f}, "
                            f"ROAD: {current_road_mean:.4f} | "
                            f"Elapsed: {elapsed:.1f}s, ETA: {eta:.1f}s ({1/avg_time_per_img:.2f} img/s)")
                 
             except Exception as e:
-                print(f"Error processing {image_path}: {e}")
+                print(f"Error processing batch {i} (paths: {image_path_batch}): {e}")
                 continue
         
         # Calculate final statistics
@@ -965,7 +904,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                            f"Elapsed: {elapsed:.1f}s, ETA: {eta:.1f}s ({1/avg_time_per_img:.2f} img/s)")
                 
             except Exception as e:
-                print(f"Error processing {image_path}: {e}")
+                print(f"Error processing batch {i} (paths: {image_path_batch}): {e}")
                 continue
         
         # Calculate final statistics

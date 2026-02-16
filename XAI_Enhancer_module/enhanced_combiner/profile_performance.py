@@ -80,10 +80,26 @@ def profile_run():
     # 3. Profile Insertion AUC
     print("\nProfiling Insertion AUC...")
     t_start = time.time()
-    _, ins_auc = evaluator.compute_insertion_auc(image_tensor, saliency_map, label, step_size=224, batch_size=256)
+    # Run 1: 50 steps (step_size=1000 approx)
+    print("\nTest 1: 50 steps")
+    t_start = time.time()
+    _, _ = evaluator.compute_insertion_auc(image_tensor, saliency_map, label, step_size=1000, batch_size=2048)
     torch.cuda.synchronize() if device.type == 'cuda' else None
-    t_ins = time.time() - t_start
-    print(f"Insertion AUC Time: {t_ins:.4f}s (Score: {ins_auc:.4f})")
+    print(f"Time (50 steps): {time.time() - t_start:.4f}s")
+    
+    # Run 2: 224 steps (step_size=224)
+    print("\nTest 2: 224 steps")
+    t_start = time.time()
+    _, _ = evaluator.compute_insertion_auc(image_tensor, saliency_map, label, step_size=224, batch_size=2048)
+    torch.cuda.synchronize() if device.type == 'cuda' else None
+    print(f"Time (224 steps): {time.time() - t_start:.4f}s")
+    
+    # Run 3: 1000 steps (step_size=50)
+    print("\nTest 3: 1000 steps")
+    t_start = time.time()
+    _, ins_auc = evaluator.compute_insertion_auc(image_tensor, saliency_map, label, step_size=50, batch_size=2048)
+    torch.cuda.synchronize() if device.type == 'cuda' else None
+    print(f"Time (1000 steps): {time.time() - t_start:.4f}s")
     
     # 4. Profile Deletion AUC
     print("\nProfiling Deletion AUC...")
@@ -101,7 +117,20 @@ def profile_run():
     t_road = time.time() - t_start
     print(f"ROAD Time: {t_road:.4f}s")
     
-    print(f"\nTotal Processing Time: {t_cam + t_ins + t_del + t_road:.4f}s")
+    print(f"\nTotal Processing Time: {t_cam + t_del + t_road:.4f}s (excluding insertion tests)")
+
+    print("--- Raw Model Benchmark ---")
+    benchmark_data = torch.randn(256, 3, 224, 224).to(device)
+    # Warmup
+    _ = model(benchmark_data)
+    torch.cuda.synchronize() if device.type == 'cuda' else None
+    
+    t_bench = time.time()
+    for _ in range(10):
+        _ = model(benchmark_data)
+    torch.cuda.synchronize() if device.type == 'cuda' else None
+    print(f"Raw ResNet50 Speed (batch 256): {(time.time() - t_bench)/10:.4f}s per batch")
+    print(f"Throughput: {256 * 10 / (time.time() - t_bench):.2f} img/s")
 
 if __name__ == "__main__":
     profile_run()

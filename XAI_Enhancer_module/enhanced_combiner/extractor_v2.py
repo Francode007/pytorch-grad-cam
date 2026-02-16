@@ -2,14 +2,16 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Union
 from XAI_Enhancer_module.utils.optimized_cam_extractor import OptimizedCamExtractor
 from XAI_Enhancer_module.enhanced_combiner.aggregator import EnhancedCAMAggregator
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+import matplotlib.pyplot as plt
 
 class EnhancedExtractorV2(OptimizedCamExtractor):
     """
     Subclass of OptimizedCamExtractor that uses the EnhancedCAMAggregator.
+    Supports Batch Processing.
     """
     
     def __init__(self, model, model_name: str, conv_layers: List[nn.Module], 
@@ -25,87 +27,110 @@ class EnhancedExtractorV2(OptimizedCamExtractor):
         self.aggregation_config = aggregation_config or {"type": "standard"}
         
     def extract_saliency_map(self, 
-                           image_path: str,
-                           predicted_label: int,
+                           input_data: Union[str, torch.Tensor],
+                           predicted_label: Union[int, List[int]],
                            use_cache: bool = True) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Overridden to use EnhancedCAMAggregator.
+        Overridden to use EnhancedCAMAggregator with Batch Support.
         """
-        import matplotlib.pyplot as plt # lazy import
-        
-        # Load and preprocess image
-        try:
-            image = plt.imread(image_path)
-            if image.ndim == 2: # Grayscale
-                 image = np.stack((image,)*3, axis=-1)
-            elif image.shape[2] == 4: # RGBA
-                 image = image[:,:,:3]
-        except Exception as e:
-            print(f"Error reading {image_path}: {e}")
-            return None, None
+        # 1. Handle Input
+        if isinstance(input_data, str):
+            # Single Image Path
+            image = plt.imread(input_data)
+            # Handle grayscale/alpha
+            if image.ndim == 2: image = np.stack((image,)*3, axis=-1)
+            elif image.ndim == 3 and image.shape[2] == 4: image = image[:,:,:3]
+                
+            input_tensor = self.preprocess_image(image) # [1, C, H, W]
+            batch_size = 1
+            predicted_labels = [predicted_label]
+            cache_keys = [self._get_image_key(input_data)] if use_cache else None
+        elif isinstance(input_data, torch.Tensor):
+            # Batch Tensor
+            input_tensor = input_data
+            if input_tensor.dim() == 3:
+                input_tensor = input_tensor.unsqueeze(0)
+            batch_size = input_tensor.shape[0]
+            
+            if isinstance(predicted_label, int):
+                predicted_labels = [predicted_label] * batch_size
+            else:
+                predicted_labels = predicted_label
+            cache_keys = None 
+        else:
+            raise ValueError("input_data must be image path (str) or Tensor")
 
-        input_tensor = self.preprocess_image(image)
+        # 2. Get Actual Outputs
+        actual_outputs = self.get_actual_output_batch(input_tensor, cache_keys) # [B, Classes]
         
-        # Get actual output (with caching if enabled)
-        cache_key = self._get_image_key(image_path) if use_cache else None
-        actual_output = self.get_actual_output(input_tensor, cache_key)
-        
-        # Generate CAM and modified activations
-        targets = [ClassifierOutputTarget(predicted_label)]
-        # cam_per_layer: List of np.ndarray [1, H, W] (already scaled)
-        # modified_activations_per_layer: List of tensors/arrays
+        # 3. Generate CAM and Modified Activations
+        targets = [ClassifierOutputTarget(lbl) for lbl in predicted_labels]
+        # cam_per_layer: List of np.ndarray [B, H, W]
+        # modified_activations_per_layer: List of tensors
         cam_per_layer, modified_activations_per_layer = self.cam_method(
             input_tensor.to(self.device), 
             targets
         )
         
-        # Compute modified outputs efficiently
-        # modified_outputs: List of np.ndarray [num_classes]
+        # 4. Compute Modified Outputs
         modified_outputs = self.compute_modified_outputs_batch(
             input_tensor, 
             modified_activations_per_layer
         )
         
-        # Compute cosine similarities
-        cosine_similarities = self.compute_cosine_similarities(actual_output, modified_outputs)
+        # 5. Compute Similarities
+        cosine_similarities = self.compute_cosine_similarities(actual_outputs, modified_outputs) # [Num_Layers, B]
         
-        # --- NEW AGGREGATION LOGIC ---
+        # 6. Hybrid Aggregation
+        # We need to pass [Num_Layers, B] scores and cams to Aggregator.
+        # But Aggregator typically expects single sample inputs or handles batching?
+        # EnhancedCAMAggregator currently seems designed for List[Tensor(H,W)] and Scores(N).
+        # We need to vectorize it or loop.
         
-        # Prepare CAMs as tensors
-        # cam_per_layer is a list of arrays of shape (1, H, W)
-        # We need individual tensors of shape (H, W) or (1, H, W)
-        cams_tensor_list = [torch.from_numpy(c[0, :]).float() for c in cam_per_layer]
-
-        # Prepare Layer Shapes for Stagewise Aggregation
-        # We can infer the shape from the raw CAMs BEFORE scaling, but here we only have scaled CAMs.
-        # Wait, BaseCAM.compute_cam_per_layer returns *scaled* cams.
-        # However, for stagewise aggregation we need to know which "stage" a layer belongs to.
-        # Usually stages are defined by resolution.
-        # BUT, `cam_per_layer` in `OptimizedCamExtractor` calls `scale_cam_image`.
-        # So all cams are already 224x224 (or target size).
-        # We need the ORIGINAL resolution to group by stage.
+        # Let's inspect shapes:
+        # cosine_similarities: [Num_Layers, B]
+        # cam_per_layer: List[ [B, 1, H, W] ] or [B, H, W]
         
-        # Workaround: Inspect the `modified_activations_per_layer`. 
-        # They should preserve the spatial dimensions of that layer.
+        # Infer Layer Shapes
         layer_shapes = []
         for mod_act in modified_activations_per_layer:
-             # mod_act shape is (1, C, H, W) or (1, C, D, H, W)
+             # mod_act shape is (B, C, H, W) or (B, C, D, H, W)
              if isinstance(mod_act, torch.Tensor):
                  shape = mod_act.shape[-2:] # H, W
              else:
                  shape = mod_act.shape[-2:]
              layer_shapes.append(tuple(shape))
         
-        # Call Aggregator
-        weighted_cam = EnhancedCAMAggregator.aggregate_hybrid(
-            cams=cams_tensor_list,
-            scores=cosine_similarities,
-            layer_shapes=layer_shapes,
-            method_config=self.aggregation_config
-        )
+        # Prepare CAM tensor list
+        # List of [B, H, W]
+        cams_tensor_list = []
+        for c in cam_per_layer:
+            t = torch.from_numpy(c).to(self.device)
+            if t.dim() == 4: t = t.squeeze(1)
+            cams_tensor_list.append(t)
+            
+        final_cam_batch = torch.zeros(batch_size, input_tensor.shape[2], input_tensor.shape[3], device=self.device)
         
-        # Normalize final CAM to [0, 1]
-        weighted_cam = weighted_cam - weighted_cam.min()
-        weighted_cam = weighted_cam / (1e-7 + weighted_cam.max())
+        # Iterate over batch to apply aggregation (safest for complex aggregators like Pyramid)
+        # TODO: Fully vectorize Aggregator later.
+        scores_t = torch.from_numpy(cosine_similarities).to(self.device) # [Num_Layers, B]
         
-        return input_tensor.squeeze(0), weighted_cam
+        for b in range(batch_size):
+            # Extract single sample data
+            sample_cams = [c[b] for c in cams_tensor_list] # List of [H, W]
+            sample_scores = scores_t[:, b].cpu().numpy() # [Num_Layers]
+            
+            weighted_cam = EnhancedCAMAggregator.aggregate_hybrid(
+                cams=sample_cams,
+                scores=sample_scores,
+                layer_shapes=layer_shapes,
+                method_config=self.aggregation_config
+            )
+            
+            # Normalize
+            weighted_cam = weighted_cam - weighted_cam.min()
+            weighted_cam = weighted_cam / (1e-7 + weighted_cam.max())
+            
+            final_cam_batch[b] = weighted_cam
+            
+        return input_tensor, final_cam_batch
