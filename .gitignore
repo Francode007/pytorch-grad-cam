@@ -16,3 +16,4 @@ dist
 /XAI_Enhancer_module/run_xai_enhancer.py
 /.venv_new
 /enhanced_results
+*.pdf
