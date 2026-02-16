@@ -49,7 +49,7 @@ def parse_args():
                         help="Directory for cached model weights")
     # Dataset
     parser.add_argument("--imagenet-path", type=str,
-                        default=str(project_root / "imagenet_val_images"),
+                        default=str(project_root / "imagenet_val_sample"),
                         help="Path to ImageNet validation images")
     parser.add_argument("--count", type=int, default=50,
                         help="Number of images to evaluate")
@@ -83,11 +83,14 @@ def parse_args():
     parser.add_argument("--device", type=str, default="auto",
                         choices=["auto", "cuda", "mps", "cpu"],
                         help="Device preference")
+    # Saliency sharpening (optional)
+    parser.add_argument("--sharpen-gamma", type=float, default=1.0,
+                        help="Power-law sharpening γ (>1 = sharper, 1.0 = disabled)")
     # Comparison
     parser.add_argument("--compare-standard", action="store_true",
                         help="Also run standard GradCAM, GradCAM++, HiResCAM for comparison")
     # Step size for evaluation
-    parser.add_argument("--step-size", type=int, default=50,
+    parser.add_argument("--step-size", type=int, default=224,
                         help="Step size for insertion/deletion evaluation")
     parser.add_argument("--batch-size", type=int, default=64,
                         help="Batch size for evaluation inference")
@@ -119,6 +122,7 @@ def main():
     print(f"  Model:          {args.model}")
     print(f"  Norm strategy:  {args.norm_strategy}")
     print(f"  Aggregation:    pyramid (β={args.beta}, k%={args.k_percent}, T={args.temp})")
+    print(f"  Sharpen γ:      {args.sharpen_gamma}")
     print(f"  Device:         {args.device}")
     print(f"  Images:         {args.count} (start={args.start})")
     print(f"  Log weights:    {args.log_weights}")
@@ -143,6 +147,7 @@ def main():
             "norm_strategy": args.norm_strategy,
             "log_weights": args.log_weights,
             "weight_log_dir": args.output_dir,
+            "sharpen_gamma": args.sharpen_gamma,
         },
     )
 

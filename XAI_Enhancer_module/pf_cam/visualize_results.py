@@ -52,8 +52,8 @@ def plot_method_comparison(pf_results_df, comparison_df, output_dir):
     df = pd.DataFrame(all_data)
     
     # Metrics to plot
-    metrics = ["insertion_auc", "deletion_auc", "road_mean"]
-    metric_names = ["Insertion AUC (↑)", "Deletion AUC (↓)", "ROAD Score (↓)"]
+    metrics = ["insertion_auc", "deletion_auc", "road_combined_mean"]
+    metric_names = ["Insertion AUC (↑)", "Deletion AUC (↓)", "ROADCombined (↑)"]
     
     # Create plot
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))

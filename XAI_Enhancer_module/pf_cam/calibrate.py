@@ -111,7 +111,7 @@ def run_single_trial(
         "norm_strategy": args.norm_strategy,
         "insertion_auc": results.get("insertion_auc", 0.0),
         "deletion_auc": results.get("deletion_auc", 0.0),
-        "road_mean": results.get("road_mean", 0.0),
+        "road_combined_mean": results.get("road_combined_mean", 0.0),
         "time_sec": elapsed,
     }
     
@@ -123,7 +123,7 @@ def run_single_trial(
     
     print(f"  Result: Ins={trial_result['insertion_auc']:.4f}, "
           f"Del={trial_result['deletion_auc']:.4f}, "
-          f"ROAD={trial_result['road_mean']:.4f} "
+          f"ROAD={trial_result['road_combined_mean']:.4f} "
           f"-> Score={trial_result['score_ins_del']:.4f}")
     
     return trial_result

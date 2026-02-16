@@ -339,105 +339,56 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         auc = float(np.trapz(confidences)) / len(confidences)
         return confidences, auc
     
-    def evaluate_road(self, image_tensor: torch.Tensor, 
+    def evaluate_road_combined(self, image_tensor: torch.Tensor, 
                      saliency_map: np.ndarray, predicted_label: int,
-                     thresholds: List[int] = [20, 40, 60, 80],
-                     imputation: str = "blur") -> Dict[str, float]:
+                     percentiles: List[int] = [20, 40, 60, 80]) -> float:
         """
-        Evaluate ROAD (Remove and Debias) score at multiple thresholds.
+        Evaluate ROADCombined score: (LoRF - MoRF) / 2.
+        
+        Uses the standard pytorch_grad_cam ROADCombined metric with
+        NoisyLinearImputer (the correct ROAD implementation).
         
         Args:
-            image_tensor: Input image tensor (C, H, W)
+            image_tensor: Input image tensor (C, H, W) or (1, C, H, W)
             saliency_map: Saliency map (H, W) or (1, H, W)
             predicted_label: Target class index
-            thresholds: List of percentile thresholds to remove (e.g., [20, 40] removes top 20% and 40%)
-            imputation: Imputation strategy ("blur", "black")
+            percentiles: Percentile thresholds for averaging
             
         Returns:
-            Dictionary mapping "road_{threshold}" to the score.
+            ROADCombined score (float). Higher = better explanation.
         """
-
-        import torch
-        import numpy as np
-        import torchvision.transforms.functional as TF
+        from pytorch_grad_cam.metrics.road import ROADCombined
+        from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
         
-        # Ensure image tensor is on the correct device
-        image_tensor = image_tensor.to(self.device).clone()
-        if image_tensor.dim() == 4:
-            image_tensor = image_tensor.squeeze(0)
-            
-        # Ensure saliency map is correct shape
-        if len(saliency_map.shape) == 3:
-            saliency_map = saliency_map[0]
-            
-        flat_saliency = saliency_map.flatten()
+        # Prepare inputs in the shape ROADCombined expects
+        # input_tensor: [1, C, H, W]  cam: [1, H, W]
+        if image_tensor.dim() == 3:
+            input_t = image_tensor.unsqueeze(0)
+        else:
+            input_t = image_tensor
         
-        # Prepare batch of modified images
-        # First element is the original image for baseline reference
-        batch_images = [image_tensor]
+        if saliency_map.ndim == 2:
+            cam_np = saliency_map[np.newaxis, :, :]
+        elif saliency_map.ndim == 3 and saliency_map.shape[0] != 1:
+            cam_np = saliency_map[np.newaxis, :, :]
+        else:
+            cam_np = saliency_map
         
-        # Create imputation background
-        if imputation == "blur":
-            # Apply Gaussian blur
-            # Kernel size should be odd, e.g., 11x11, sigma 5.0
-            blurred_image = TF.gaussian_blur(image_tensor, kernel_size=11, sigma=5.0)
-            imputation_tensor = blurred_image
-        else: # "black" or default
-            imputation_tensor = torch.zeros_like(image_tensor)
-            
-        # Pre-calculate flattened views for efficient indexing
-        image_flat = image_tensor.view(image_tensor.shape[0], -1)
-        imputation_flat = imputation_tensor.view(imputation_tensor.shape[0], -1)
+        targets = [ClassifierOutputTarget(predicted_label)]
         
-        for p in thresholds:
-            # Determine threshold value for top p% pixels
-            # e.g., p=20 means we remove pixels > 80th percentile
-            percentile_val = np.percentile(flat_saliency, 100 - p)
-            
-            mask = (saliency_map > percentile_val) # Pixels to remove
-            mask_flat = mask.flatten()
-            mask_indices = torch.where(torch.from_numpy(mask_flat).to(self.device))[0]
-            
-            # Create modified image
-            modified = image_tensor.clone()
-            modified_flat = modified.view(modified.shape[0], -1)
-            
-            # Replace important pixels with imputation values
-            modified_flat[:, mask_indices] = imputation_flat[:, mask_indices]
-            
-            batch_images.append(modified)
-            
-        # Process entire batch in one go
-        batch_tensor = torch.stack(batch_images)
-        
-        self.model.eval()
-        with torch.no_grad():
-            if self.device.type == 'cuda':
-                with torch.amp.autocast('cuda'):
-                    outputs = self.model(batch_tensor)
-            else:
-                outputs = self.model(batch_tensor)
-                
-            probs = torch.softmax(outputs, dim=1)[:, predicted_label]
-            
-        # Calculate scores
-        original_conf = probs[0].item()
-        results = {}
-        
-        for i, p in enumerate(thresholds):
-            modified_conf = probs[i+1].item()
-            # ROAD score is the drop in confidence
-            # Ensure non-negative
-            diff = float(max(0.0, original_conf - modified_conf))
-            results[f"road_{p}"] = diff
-            
-        return results
+        try:
+            road_metric = ROADCombined(percentiles=percentiles)
+            scores = road_metric(input_t, cam_np, targets, self.model)
+            return float(scores[0])  # First (and only) batch element
+        except Exception as e:
+            print(f"[ROADCombined] Error: {e}")
+            return 0.0
     
     def _evaluate_saliency_map(self, image_tensor: torch.Tensor, saliency_map: np.ndarray, 
                               predicted_label: int, step_size: int = 50, verbose: bool = False, 
                               batch_size: int = 64) -> Dict[str, float]:
         """
-        Evaluate a single saliency map using insertion AUC, deletion AUC, and ROAD metrics.
+        Evaluate a single saliency map using insertion AUC, deletion AUC, and ROADCombined.
         Returns a dictionary of all metrics.
         """
         try:
@@ -455,18 +406,17 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             )
             results['deletion_auc'] = deletion_auc
             
-            # Compute ROAD score (multi-threshold)
-            road_scores = self.evaluate_road(
+            # Compute ROADCombined score (LoRF - MoRF) / 2
+            road_combined = self.evaluate_road_combined(
                 image_tensor, saliency_map, predicted_label,
-                thresholds=[20, 40, 60, 80],
-                imputation="blur"
+                percentiles=[20, 40, 60, 80]
             )
-            results.update(road_scores)
+            results['road_combined'] = road_combined
             
             if verbose:
                 print(f"        Insertion AUC: {insertion_auc:.4f}")
                 print(f"        Deletion AUC: {deletion_auc:.4f}")
-                print(f"        ROAD Scores: {road_scores}")
+                print(f"        ROADCombined: {road_combined:.4f}")
             
             return results
             
@@ -474,7 +424,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             print(f"        Error in saliency evaluation: {e}")
             import traceback
             traceback.print_exc()
-            return {'insertion_auc': 0.0, 'deletion_auc': 0.0}
+            return {'insertion_auc': 0.0, 'deletion_auc': 0.0, 'road_combined': 0.0}
     
     def _load_synset_mapping(self) -> Dict[str, str]:
         """Load ImageNet synset mapping from LOC_synset_mapping.txt"""
@@ -637,8 +587,14 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         
         return predicted_labels
     
-    def extract_enhanced_cam(self, image_path: str, predicted_label: int) -> Tuple[torch.Tensor, np.ndarray]:
-        """Extract Enhanced CAM for a single ImageNet image."""
+    def extract_enhanced_cam(self, input_data, predicted_label) -> Tuple[torch.Tensor, np.ndarray]:
+        """
+        Extract Enhanced CAM for ImageNet image(s).
+        
+        Args:
+            input_data: str (file path) or torch.Tensor [B, C, H, W]
+            predicted_label: int or list of ints
+        """
         if self.enhanced_cam_extractor is None:
             self.enhanced_cam_extractor = self.extractor_cls(
                 self.model, 
@@ -649,14 +605,17 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                 **self.extractor_kwargs
             )
         
-        # Extract Enhanced CAM
+        # Extract Enhanced CAM (accepts path or tensor)
         image_tensor, saliency_map = self.enhanced_cam_extractor.extract_saliency_map(
-            image_path, predicted_label
+            input_data, predicted_label
         )
+        
+        if image_tensor is None:
+            return None, None
         
         # Ensure image tensor has batch dimension
         if len(image_tensor.shape) == 3:
-            image_tensor = image_tensor.unsqueeze(0)  # Add batch dimension
+            image_tensor = image_tensor.unsqueeze(0)
         
         # Convert saliency map to numpy if it's a tensor
         if isinstance(saliency_map, torch.Tensor):
@@ -707,121 +666,62 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         
         # Create dataset and loader
         dataset = _ImageNetDataset(image_paths, predicted_labels, class_names, self.transform)
+        dl_batch_size = min(32, len(dataset)) if len(dataset) > 0 else 1
         loader = DataLoader(
             dataset, 
-            batch_size=1,  # Keep batch size 1 for the complex per-image evaluation logic
+            batch_size=dl_batch_size,
             num_workers=num_workers,
             pin_memory=True if self.device.type == 'cuda' else False,
             prefetch_factor=2 if num_workers > 0 else None,
             shuffle=False
         )
         
-        # Create progress description based on verbosity
         progress_desc = "Processing Enhanced CAM"
         
         start_time = time.time()
-        pbar = tqdm(loader, desc=progress_desc, total=len(dataset))
-        for i, (image_tensor, predicted_label, class_name, image_path_batch) in enumerate(pbar):
+        images_processed = 0
+        num_batches = len(loader)
+        pbar = tqdm(loader, desc=progress_desc, total=num_batches, unit="batch")
+        for i, (image_tensor_batch, predicted_label_batch, class_name_batch, image_path_batch) in enumerate(pbar):
             try:
-                # Unpack batch (size 1)
-                image_tensor = image_tensor.squeeze(0)  # [C, H, W]
-                # Keep as 1-batch tensor for compatibility with extract and evaluate methods
-                # Actually, extract_enhanced_cam typically expects path, but we have tensor now?
-                # Wait, extract_enhanced_cam calls enhanced_cam_extractor.extract_saliency_map(image_path, ...)
-                # The extractor loads the image from path usually. 
-                # Optimization: We can modify extract_saliency_map to accept tensor, OR we continue to pass path.
-                # If we pass path, we reload image. That defeats the purpose of DataLoader prefetching image.
-                # Let's check `extract_enhanced_cam` and `OptimizedCamExtractor`.
-                # `extract_enhanced_cam` takes `image_path`.
-                # We need to change `extract_enhanced_cam` to accept tensor or just use `image_path` from loader.
-                
-                # If we use `image_path` from loader, we are still doing disk I/O in main thread inside `extract_saliency_map` if it reads file.
-                # However, `OptimizedCamExtractor` likely uses `cv2` or `PIL` to read.
-                # To fully optimize, we should pass the pre-loaded tensor to `extract_enhanced_cam`.
-                
-                # Let's check `extract_enhanced_cam`. It calls `self.enhanced_cam_extractor.extract_saliency_map`.
-                # We can't easily change `OptimizedCamExtractor` as it is in another file I haven't viewed. 
-                # BUT, if `OptimizedCamExtractor` is purely for CAM, it should take a tensor.
-                # If it takes a path, I might be limited.
-                
-                # However, the user asked for MAXIMISING RAM USAGE.
-                # Even if I just pre-load images into RAM with DataLoader, it helps.
-                # But to really help, I should use the tensor from DataLoader.
-                
-                # Let's assume for now I should use the path if I can't change extractor, 
-                # BUT `extract_enhanced_cam` does return `image_tensor` and `saliency_map`.
-                # If I can bypass internal image loading in extractor...
-                
-                # Wait, `extract_enhanced_cam` implementation in THIS file:
-                # def extract_enhanced_cam(self, image_path: str, predicted_label: int) -> Tuple[torch.Tensor, np.ndarray]:
-                #     ...
-                #     image_tensor, saliency_map = self.enhanced_cam_extractor.extract_saliency_map(image_path, predicted_label)
-                #     ...
-                
-                # I should probably just pass the path for now to be safe, as changing the extractor signature might be out of scope or risky without seeing it.
-                # BUT, using DataLoader just for paths is not "maximizing RAM/GPU" much.
-                # The "resize/transform" part is done in workers. That IS useful. 
-                # So if `extract_saliency_map` allows passing a tensor, that's best.
-                # If not, I still save time on `_evaluate_saliency_map` which USES the tensor.
-                # Wait, `_evaluate_saliency_map` takes `image_tensor`.
-                # `evaluate_enhanced_cam` GETS `image_tensor` from `extract_enhanced_cam`.
-                # So `extract_enhanced_cam` does the loading.
-                
-                # CRITICAL: If I use DataLoader to load `image_tensor`, I can pass THAT to `_evaluate_saliency_map`.
-                # But `extract_enhanced_cam` ALSO returns a tensor.
-                # So I would be loading it TWICE: once in DataLoader, once in `extract_enhanced_cam`.
-                # That wastes CPU, but maximizes RAM usage (storing loaded images in queue).
-                # But it doesn't help GPU throughput if we re-load.
-                
-                # Let's look at `evaluate_method` (Standard CAM).
-                # `self._extract_standard_cam(image_path, ...)` -> returns saliency map.
-                # Then `image = Image.open(image_path)... image_tensor = self.transform(image)...`
-                # value: `image_tensor` is used in `_evaluate_saliency_map`.
-                # HERE, using DataLoader IS beneficial because we skip the load/transform in the main loop for evaluation.
-                # `_extract_standard_cam` likely loads image internally too.
-                
-                # For `evaluate_enhanced_cam`:
-                # It calls `extract_enhanced_cam`.
-                
-                # I will proceed with DataLoader yielding tensors.
-                # Even if `extract_enhanced_cam` re-loads, at least `evaluate_standard_methods` acts better?
-                # Actually, `evaluate_enhanced_cam` calls `extract_enhanced_cam` which usually does forward pass.
-                # If I can't optimize `extract_enhanced_cam` interface, I'll still use DataLoader for the "Evaluation" phase (Insertion/Deletion) which uses the tensor.
-                # AND I can pass the DataLoader's tensor to `_evaluate_saliency_map` instead of using the one from `extract_enhanced_cam` (they should be identical).
-                # Wait, `extract_enhanced_cam` returns tensor used for CAM generation. It might be normalized differently?
-                # `ImageNetProperAUCEvaluator` uses standard ImageNet normalization. 
-                # `OptimizedCamExtractor` likely uses the same.
-                
-                # I will use the `image_path` from DataLoader (it returns tuple) to pass to `extract_enhanced_cam`.
-                # And I will use `image_tensor` from DataLoader to pass to `_evaluate_saliency_map`.
-                
-                # ALSO: To maximize RAM, setting `num_workers` high helps.
-                
-                predicted_label = predicted_label.item()
-                image_path = image_path_batch[0]
-                class_name = class_name[0]
+                current_batch_size = image_tensor_batch.shape[0]
+                pred_label_list = predicted_label_batch.tolist()
                 
                 if verbose:
-                    print(f"\n--- Image {i+1}/{len(image_paths)}: {os.path.basename(image_path)} ---")
-                    print(f"    Class: {class_name}")
-                    print(f"    Predicted label: {predicted_label}")
+                    print(f"\n--- Batch {i+1}: {current_batch_size} images ---")
                 
-                # Extract Enhanced CAM (Still might do I/O, hard to avoid without deeper refactor)
-                _, saliency_map = self.extract_enhanced_cam(image_path, predicted_label)
-                
-                # Use the PRE-FETCHED tensor for evaluation to save time
-                metrics = self._evaluate_saliency_map(
-                    image_tensor, saliency_map, predicted_label, step_size, verbose, batch_size
+                # Extract Enhanced CAM using pre-loaded tensor batch
+                # PFCamExtractor.extract_saliency_map accepts tensors directly
+                _, saliency_maps = self.extract_enhanced_cam(
+                    image_tensor_batch, pred_label_list
                 )
                 
-                insertion_aucs.append(metrics['insertion_auc'])
-                deletion_aucs.append(metrics['deletion_auc'])
-                road_scores.append(metrics.get('road_20', 0.0))
+                if saliency_maps is None:
+                    print(f"Warning: Failed to extract CAM for batch {i}")
+                    continue
                 
-                if verbose:
+                # Ensure saliency_maps is [B, H, W]
+                if saliency_maps.ndim == 2:
+                    saliency_maps = saliency_maps[np.newaxis, :, :]
+                
+                # Evaluate each image in the batch
+                for b in range(current_batch_size):
+                    img_t = image_tensor_batch[b]  # [C, H, W]
+                    sal_np = saliency_maps[b]      # [H, W]
+                    lbl = pred_label_list[b]
+                    
+                    metrics = self._evaluate_saliency_map(
+                        img_t, sal_np, lbl, step_size, verbose=False, batch_size=batch_size
+                    )
+                    
+                    insertion_aucs.append(metrics['insertion_auc'])
+                    deletion_aucs.append(metrics['deletion_auc'])
+                    road_scores.append(metrics.get('road_combined', 0.0))
+                
+                if verbose and current_batch_size > 0:
                     print(f"    Insertion AUC: {metrics['insertion_auc']:.4f}")
                     print(f"    Deletion AUC: {metrics['deletion_auc']:.4f}")
-                    print(f"    ROAD Score (20%): {metrics.get('road_20', 0.0):.4f}")
+                    print(f"    ROADCombined: {metrics.get('road_combined', 0.0):.4f}")
                 
                 # Update progress bar with current means
                 current_ins_mean = np.mean(insertion_aucs)
@@ -834,21 +734,25 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                     'ROAD': f"{current_road_mean:.3f}"
                 })
                 
-                # Periodic logging for non-verbose mode (every 50 images)
+                images_processed += current_batch_size
+                
+                # Periodic logging (every 50 batches)
                 if not verbose and (i + 1) % 50 == 0:
                      elapsed = time.time() - start_time
-                     avg_time_per_img = elapsed / (i + 1)
-                     remaining_imgs = len(dataset) - (i + 1)
+                     avg_time_per_img = elapsed / images_processed
+                     remaining_imgs = len(dataset) - images_processed
                      eta = remaining_imgs * avg_time_per_img
                      
-                     print(f"\n[Batch {i+1}/{len(dataset)}] Means - "
+                     print(f"\n[Batch {i+1}/{num_batches}] {images_processed}/{len(dataset)} images - "
                            f"Ins: {current_ins_mean:.4f}, "
                            f"Del: {current_del_mean:.4f}, "
                            f"ROAD: {current_road_mean:.4f} | "
                            f"Elapsed: {elapsed:.1f}s, ETA: {eta:.1f}s ({1/avg_time_per_img:.2f} img/s)")
                 
             except Exception as e:
-                print(f"Error processing {image_path}: {e}")
+                print(f"Error processing batch {i}: {e}")
+                import traceback
+                traceback.print_exc()
                 continue
         
         # Calculate final statistics
@@ -857,8 +761,8 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             'insertion_auc_std': np.std(insertion_aucs),
             'deletion_auc_mean': np.mean(deletion_aucs),
             'deletion_auc_std': np.std(deletion_aucs),
-            'road_mean': np.mean(road_scores),
-            'road_std': np.std(road_scores),
+            'road_combined_mean': np.mean(road_scores),
+            'road_combined_std': np.std(road_scores),
             'num_images': len(insertion_aucs),
             'classes_evaluated': classes_filter if classes_filter else 'All ImageNet classes'
         }
@@ -867,7 +771,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             results.update({
                 'insertion_aucs': insertion_aucs,
                 'deletion_aucs': deletion_aucs,
-                'road_scores': road_scores
+                'road_combined_scores': road_scores
             })
             
         return results
@@ -908,7 +812,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         dataset = _ImageNetDataset(image_paths, predicted_labels, class_names, self.transform)
         loader = DataLoader(
             dataset, 
-            batch_size=1,  # Keep batch size 1
+            batch_size=1,  # Keep batch size 1 for standard methods (per-image CAM extraction)
             num_workers=num_workers,
             pin_memory=True if self.device.type == 'cuda' else False,
             prefetch_factor=2 if num_workers > 0 else None,
@@ -929,15 +833,14 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                     image_path, predicted_label, cam_method_name
                 )
                 
-                # Use pre-fetched image_tensor for evaluation
-                # Evaluate saliency map
+                # Evaluate saliency map using pre-fetched tensor
                 metrics = self._evaluate_saliency_map(
                     image_tensor, saliency_map, predicted_label, step_size=50, verbose=False, batch_size=batch_size
                 )
                 
                 insertion_aucs.append(metrics['insertion_auc'])
                 deletion_aucs.append(metrics['deletion_auc'])
-                road_scores.append(metrics.get('road_20', 0.0))
+                road_scores.append(metrics.get('road_combined', 0.0))
                 
                 # Update progress bar with current means
                 current_ins_mean = np.mean(insertion_aucs)
@@ -950,15 +853,14 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                     'ROAD': f"{current_road_mean:.3f}"
                 })
                 
-                # Periodic logging for non-verbose mode (every 50 images)
-                # Note: evaluate_method doesn't have a verbose arg exposed in the loop same as above, but we can default check
+                # Periodic logging (every 50 images)
                 if (i + 1) % 50 == 0:
                      elapsed = time.time() - start_time
                      avg_time_per_img = elapsed / (i + 1)
                      remaining_imgs = len(dataset) - (i + 1)
                      eta = remaining_imgs * avg_time_per_img
                      
-                     print(f"\n[Batch {i+1}/{len(dataset)}] Means - "
+                     print(f"\n[Image {i+1}/{len(dataset)}] Means - "
                            f"Ins: {current_ins_mean:.4f}, "
                            f"Del: {current_del_mean:.4f}, "
                            f"ROAD: {current_road_mean:.4f} | "
@@ -974,8 +876,8 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             'insertion_auc_std': np.std(insertion_aucs),
             'deletion_auc_mean': np.mean(deletion_aucs),
             'deletion_auc_std': np.std(deletion_aucs),
-            'road_mean': np.mean(road_scores),
-            'road_std': np.std(road_scores),
+            'road_combined_mean': np.mean(road_scores),
+            'road_combined_std': np.std(road_scores),
             'num_images': len(insertion_aucs),
             'classes_evaluated': classes_filter if classes_filter else 'All ImageNet classes'
         }
@@ -984,7 +886,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             results.update({
                 'insertion_aucs': insertion_aucs,
                 'deletion_aucs': deletion_aucs,
-                'road_scores': road_scores
+                'road_combined_scores': road_scores
             })
 
         return results
@@ -1073,8 +975,8 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             'Insertion_AUC_Std': enhanced_results['insertion_auc_std'],
             'Deletion_AUC_Mean': enhanced_results['deletion_auc_mean'],
             'Deletion_AUC_Std': enhanced_results['deletion_auc_std'],
-            'ROAD_Mean': enhanced_results['road_mean'],
-            'ROAD_Std': enhanced_results['road_std'],
+            'ROADCombined_Mean': enhanced_results['road_combined_mean'],
+            'ROADCombined_Std': enhanced_results['road_combined_std'],
             'Images_Evaluated': enhanced_results['num_images']
         }
         all_results.append(enhanced_row)
@@ -1094,8 +996,8 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                 'Insertion_AUC_Std': method_results['insertion_auc_std'],
                 'Deletion_AUC_Mean': method_results['deletion_auc_mean'],
                 'Deletion_AUC_Std': method_results['deletion_auc_std'],
-                'ROAD_Mean': method_results['road_mean'],
-                'ROAD_Std': method_results['road_std'],
+                'ROADCombined_Mean': method_results['road_combined_mean'],
+                'ROADCombined_Std': method_results['road_combined_std'],
                 'Images_Evaluated': method_results['num_images']
             }
             all_results.append(method_row)
