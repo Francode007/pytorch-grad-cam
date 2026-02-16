@@ -14,12 +14,12 @@ from tqdm import tqdm
 
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from XAI_Enhancer_module.utils.model_utils import get_device, transformations, CLASS_TO_IDX, IDX_TO_CLASS
-from XAI_Enhancer_module.enhanced_cams import (
-    GradCAMEnhanced, 
-    GradCAMPlusPlusEnhanced, 
-    HiResCAMEnhanced, 
-    ScoreCAMEnhanced, 
-    AblationCAMEnhanced
+from pytorch_grad_cam import (
+    GradCAM, 
+    GradCAMPlusPlus, 
+    HiResCAM, 
+    ScoreCAM, 
+    AblationCAM
 )
 
 
@@ -53,11 +53,17 @@ class OptimizedCamExtractor:
         
         # Initialize the specified enhanced CAM method
         enhanced_cam_methods = {
-            'GradCAMEnhanced': GradCAMEnhanced,
-            'GradCAMPlusPlusEnhanced': GradCAMPlusPlusEnhanced,
-            'HiResCAMEnhanced': HiResCAMEnhanced,
-            'ScoreCAMEnhanced': ScoreCAMEnhanced,
-            'AblationCAMEnhanced': AblationCAMEnhanced
+            'GradCAMEnhanced': GradCAM,
+            'GradCAMPlusPlusEnhanced': GradCAMPlusPlus,
+            'HiResCAMEnhanced': HiResCAM,
+            'ScoreCAMEnhanced': ScoreCAM,
+            'AblationCAMEnhanced': AblationCAM,
+             # Also allow standard names
+            'GradCAM': GradCAM,
+            'GradCAMPlusPlus': GradCAMPlusPlus,
+            'HiResCAM': HiResCAM,
+            'ScoreCAM': ScoreCAM,
+            'AblationCAM': AblationCAM
         }
         
         if cam_method not in enhanced_cam_methods:
