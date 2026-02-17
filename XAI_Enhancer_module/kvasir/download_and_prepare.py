@@ -21,6 +21,7 @@ try:
         download_kvasir_v2,
         prepare_splits,
         KVASIR_CLASSES,
+        FOLDER_TO_CLASS,
         _find_image_paths,
     )
 except ModuleNotFoundError:
@@ -66,16 +67,25 @@ def main():
         print("Download first (e.g. with --source kaggle) or from https://www.kaggle.com/datasets/plhalvorsen/KVASIR-v2-a-gastrointestinal-tract-dataset")
         print(f"Then extract so class folders are under: {extract_dir}")
         sys.exit(1)
-    # Handle nested extract: sometimes zip contains one top-level folder
-    candidates = [extract_dir]
-    for d in extract_dir.iterdir():
-        if d.is_dir() and any((d / c).exists() for c in KVASIR_CLASSES):
-            candidates.append(d)
-            break
-    use_root = candidates[-1] if len(candidates) > 1 else extract_dir
+    # Pick the directory that has the most (ideally all 8) class folders as direct children
+    def count_class_folders(root):
+        # Count canonical classes that have at least one folder (canonical or alias) present
+        return len({FOLDER_TO_CLASS[f] for f in FOLDER_TO_CLASS if (Path(root) / f).is_dir()})
+
+    n_at_root = count_class_folders(extract_dir)
+    if n_at_root == len(KVASIR_CLASSES):
+        use_root = extract_dir
+    else:
+        best_root, best_count = extract_dir, n_at_root
+        for d in extract_dir.iterdir():
+            if d.is_dir():
+                n = count_class_folders(d)
+                if n > best_count:
+                    best_root, best_count = d, n
+        use_root = best_root
     pairs = _find_image_paths(use_root)
     if not pairs:
-        # Try one level down
+        # Fallback: any subdir that has at least one class folder
         for d in extract_dir.iterdir():
             if d.is_dir():
                 pairs = _find_image_paths(d)

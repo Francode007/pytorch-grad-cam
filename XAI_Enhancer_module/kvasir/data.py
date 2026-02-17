@@ -5,11 +5,14 @@ Uses ImageNet mean/std normalization and ImageNet-style resize + crop as agreed.
 
 import os
 import random
+import threading
+import time
 import zipfile
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import torch
+from tqdm import tqdm
 from PIL import Image
 from torch.utils.data import Dataset
 import torchvision.transforms as T
@@ -25,9 +28,14 @@ KVASIR_CLASSES = [
     "polyps",
     "ulcerative-colitis",
 ]
+# Kaggle (and others) may use slightly different folder names (folder_name -> canonical class name)
+FOLDER_ALIASES = {"dyed-lifted-polyps": "dyed-lifted-polyp"}
 KVASIR_NUM_CLASSES = len(KVASIR_CLASSES)
 CLASS_TO_IDX = {c: i for i, c in enumerate(KVASIR_CLASSES)}
 IDX_TO_CLASS = {i: c for i, c in enumerate(KVASIR_CLASSES)}
+# All folder names that map to a class (canonical + aliases)
+FOLDER_TO_CLASS = {c: c for c in KVASIR_CLASSES}
+FOLDER_TO_CLASS.update(FOLDER_ALIASES)
 
 # ImageNet normalization (used for pretrained backbones)
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
@@ -56,16 +64,25 @@ def get_val_transforms(crop_size: int = 224, resize_size: int = 256):
 
 
 def _find_image_paths(root: Path, extensions: Tuple[str, ...] = (".jpg", ".jpeg", ".png")) -> List[Tuple[Path, int]]:
-    """Scan root for class folders and return (path, label_index)."""
+    """Scan root for class folders and return (path, label_index). Uses FOLDER_TO_CLASS. Handles one level of nesting (e.g. class_name/class_name/images)."""
     out: List[Tuple[Path, int]] = []
     root = Path(root)
-    for class_name in KVASIR_CLASSES:
-        class_dir = root / class_name
+    for folder_name, canonical_class in FOLDER_TO_CLASS.items():
+        class_dir = root / folder_name
         if not class_dir.is_dir():
             continue
-        for p in class_dir.iterdir():
-            if p.suffix.lower() in extensions:
-                out.append((p, CLASS_TO_IDX[class_name]))
+        label = CLASS_TO_IDX[canonical_class]
+        # Images may be directly in class_dir or one level down (Kaggle: class_name/class_name/*.jpg or class_name/splits+class_name)
+        search_dirs = [class_dir]
+        direct_files = [p for p in class_dir.iterdir() if p.suffix.lower() in extensions]
+        if not direct_files and class_dir.is_dir():
+            subdirs = [p for p in class_dir.iterdir() if p.is_dir()]
+            if subdirs:
+                search_dirs = subdirs  # search one level down in all subdirs
+        for search_dir in search_dirs:
+            for p in search_dir.iterdir():
+                if p.suffix.lower() in extensions:
+                    out.append((p, label))
     return out
 
 
@@ -230,13 +247,39 @@ def download_kvasir_v2_kaggle(data_root: str = "data") -> Path:
         from kaggle.api.kaggle_api_extended import KaggleApi
         api = KaggleApi()
         api.authenticate()
-        print(f"Downloading Kvasir-v2 from Kaggle ({KVASIR_V2_KAGGLE_SLUG}) ...")
-        api.dataset_download_files(
-            KVASIR_V2_KAGGLE_SLUG,
-            path=str(download_dir),
-            unzip=True,
-        )
-        return _ensure_kvasir_v2_structure(data_root, download_dir)
+        download_error = [None]  # mutable to capture exception from thread
+
+        def _do_download():
+            try:
+                api.dataset_download_files(
+                    KVASIR_V2_KAGGLE_SLUG,
+                    path=str(download_dir),
+                    unzip=True,
+                )
+            except Exception as e:
+                download_error[0] = e
+
+        thread = threading.Thread(target=_do_download, daemon=False)
+        thread.start()
+        with tqdm(
+            desc="Downloading Kvasir-v2 from Kaggle",
+            total=None,
+            unit="",
+            dynamic_ncols=True,
+            bar_format="{desc}: {elapsed} elapsed",
+            mininterval=1.0,
+            file=__import__("sys").stdout,
+        ) as pbar:
+            while thread.is_alive():
+                pbar.update(0)
+                time.sleep(0.5)
+            thread.join()
+        if download_error[0]:
+            raise download_error[0]
+        with tqdm(desc="Organising dataset", total=1, bar_format="{desc}...") as pbar:
+            result = _ensure_kvasir_v2_structure(data_root, download_dir)
+            pbar.update(1)
+        return result
     except Exception as e:
         print(f"Kaggle download failed: {e}")
         print(
