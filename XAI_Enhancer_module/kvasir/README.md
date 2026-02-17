@@ -17,24 +17,33 @@ pip install -r requirements.txt
 
 ## 1. Download Kvasir-v2 and prepare splits (80:20)
 
-The automatic download URL for Kvasir-v2 often returns 404, so **manual download is recommended**:
-
-1. Open **[datasets.simula.no/kvasir](https://datasets.simula.no/kvasir/)** and use the **"Download Kvasir version 2"** link (kvasir-v2.zip, ~2.3GB).
-2. Extract the zip so that the folder **`data/kvasir-v2`** contains the 8 class subfolders (e.g. `dyed-lifted-polyp`, `polyps`, …). If the zip has one top-level folder inside, you can put that folder as `data/kvasir-v2` or move its contents into `data/kvasir-v2`.
-3. **From the repository root**, create the 80:20 train/val splits:
+**Recommended (works on remote server):** use the Kaggle dataset. Install dependencies (`pip install -r requirements.txt` includes `kaggle`), then set Kaggle API credentials and run:
 
 ```bash
 cd /path/to/pytorch-grad-cam
+
+# Kaggle credentials (one of):
+# 1) Environment variables (good for remote server):
+export KAGGLE_USERNAME=your_kaggle_username
+export KAGGLE_KEY=your_kaggle_api_key
+
+# 2) Or place kaggle.json: mkdir -p ~/.kaggle && mv kaggle.json ~/.kaggle && chmod 600 ~/.kaggle/kaggle.json
+#    (Create API token at https://www.kaggle.com/settings)
+
+python -m XAI_Enhancer_module.kvasir.download_and_prepare --data-root data --source kaggle --val-ratio 0.2 --seed 42
+```
+
+Dataset: [Kaggle – KVASIR-v2](https://www.kaggle.com/datasets/plhalvorsen/KVASIR-v2-a-gastrointestinal-tract-dataset). The script downloads and extracts it to `data/kvasir-v2` and creates `data/kvasir-v2/splits/train.txt` and `val.txt`.
+
+**If dataset is already on disk:** create only the splits (no download):
+
+```bash
 python -m XAI_Enhancer_module.kvasir.download_and_prepare --data-root data --skip-download --val-ratio 0.2 --seed 42
 ```
 
-If you prefer to try automatic download first (may fail with 404):
+**Other sources:** `--source simula` (direct Simula URL, often 404) or `--source manual` (print manual-download links only).
 
-```bash
-python -m XAI_Enhancer_module.kvasir.download_and_prepare --data-root data --val-ratio 0.2 --seed 42
-```
-
-Expected layout: `data/kvasir-v2/<class_name>/*.jpg` with class names e.g. `dyed-lifted-polyp`, `dyed-resection-margins`, `esophagitis`, `normal-cecum`, `normal-pylorus`, `normal-z-line`, `polyps`, `ulcerative-colitis`. Splits are written to `data/kvasir-v2/splits/train.txt` and `val.txt`.
+Expected layout: `data/kvasir-v2/<class_name>/*.jpg` with classes: `dyed-lifted-polyp`, `dyed-resection-margins`, `esophagitis`, `normal-cecum`, `normal-pylorus`, `normal-z-line`, `polyps`, `ulcerative-colitis`.
 
 ## 2. Train
 

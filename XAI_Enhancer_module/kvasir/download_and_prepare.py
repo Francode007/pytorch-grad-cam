@@ -31,10 +31,19 @@ except ModuleNotFoundError:
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Download Kvasir-v2 and prepare 80:20 splits")
+    p = argparse.ArgumentParser(
+        description="Download Kvasir-v2 and prepare 80:20 splits. Use --source kaggle for remote/server (requires Kaggle API credentials)."
+    )
     p.add_argument("--data-root", type=str, default="data", help="Parent directory for kvasir-v2")
     p.add_argument("--val-ratio", type=float, default=0.2)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument(
+        "--source",
+        type=str,
+        default="kaggle",
+        choices=("kaggle", "simula", "manual"),
+        help="Download source: kaggle (default, works on server with KAGGLE_USERNAME/KAGGLE_KEY or ~/.kaggle/kaggle.json), simula (direct URL), manual (print instructions only)",
+    )
     p.add_argument("--skip-download", action="store_true", help="Only run prepare_splits (dataset already present)")
     return p.parse_args()
 
@@ -44,7 +53,7 @@ def main():
     data_root = Path(args.data_root)
     if not args.skip_download:
         try:
-            extract_dir = download_kvasir_v2(data_root=str(data_root))
+            extract_dir = download_kvasir_v2(data_root=str(data_root), source=args.source)
         except SystemExit:
             print("\nTo only create train/val splits (after you have extracted the dataset):")
             print(f"  python -m XAI_Enhancer_module.kvasir.download_and_prepare --data-root {data_root} --skip-download")
@@ -54,8 +63,8 @@ def main():
     extract_dir = Path(extract_dir)
     if args.skip_download and not extract_dir.exists():
         print(f"Error: --skip-download was used but {extract_dir} does not exist.")
-        print("Download the zip from https://datasets.simula.no/kvasir/ (Kvasir version 2), then extract it to:")
-        print(f"  {extract_dir}")
+        print("Download first (e.g. with --source kaggle) or from https://www.kaggle.com/datasets/plhalvorsen/KVASIR-v2-a-gastrointestinal-tract-dataset")
+        print(f"Then extract so class folders are under: {extract_dir}")
         sys.exit(1)
     # Handle nested extract: sometimes zip contains one top-level folder
     candidates = [extract_dir]

@@ -11,3 +11,4 @@ timm
 pandas
 pyarrow
 datasets
+kaggle

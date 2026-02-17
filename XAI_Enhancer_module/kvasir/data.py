@@ -173,43 +173,136 @@ class KvasirDataset(Dataset):
         return image, label, str(path)
 
 
-def download_kvasir_v2(
-    data_root: str = "data",
-    url: Optional[str] = None,
-) -> Path:
+# Kaggle dataset: https://www.kaggle.com/datasets/plhalvorsen/KVASIR-v2-a-gastrointestinal-tract-dataset
+KVASIR_V2_KAGGLE_SLUG = "plhalvorsen/kvasir-v2-a-gastrointestinal-tract-dataset"
+
+
+def _ensure_kvasir_v2_structure(data_root: Path, download_dir: Path) -> Path:
     """
-    Download Kvasir-v2 zip from Simula and extract to data_root/kvasir-v2.
-    If the dataset is already present (kvasir-v2/<class> folders exist), skip.
+    After Kaggle unzip, the zip may have one top-level folder or class folders at root.
+    Move contents so that data_root/kvasir-v2 contains the 8 class subdirs directly.
+    """
+    import shutil
+    extract_dir = data_root / "kvasir-v2"
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    subdirs = [p for p in download_dir.iterdir() if p.is_dir()]
+    # Class folders directly in download_dir -> move them into extract_dir
+    if any((download_dir / c).is_dir() for c in KVASIR_CLASSES):
+        for p in download_dir.iterdir():
+            dest = extract_dir / p.name
+            if not dest.exists():
+                shutil.move(str(p), str(dest))
+        return extract_dir
+    # One top-level folder containing the classes -> move its contents into extract_dir
+    for d in subdirs:
+        if any((d / c).is_dir() for c in KVASIR_CLASSES):
+            for p in d.iterdir():
+                dest = extract_dir / p.name
+                if not dest.exists():
+                    shutil.move(str(p), str(dest))
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+            return extract_dir
+    raise FileNotFoundError(
+        f"Could not find Kvasir class folders under {download_dir}. "
+        f"Expected one of: {KVASIR_CLASSES}"
+    )
+
+
+def download_kvasir_v2_kaggle(data_root: str = "data") -> Path:
+    """
+    Download Kvasir-v2 from Kaggle and extract to data_root/kvasir-v2.
+    Requires Kaggle API credentials: KAGGLE_USERNAME and KAGGLE_KEY env vars,
+    or ~/.kaggle/kaggle.json. Suitable for remote/server runs.
     """
     data_root = Path(data_root)
     extract_dir = data_root / "kvasir-v2"
-    if extract_dir.exists():
-        # Check that we have class folders
-        if any((extract_dir / c).is_dir() for c in KVASIR_CLASSES):
-            print(f"Kvasir-v2 already present at {extract_dir}, skipping download.")
-            return extract_dir
+    if extract_dir.exists() and any((extract_dir / c).is_dir() for c in KVASIR_CLASSES):
+        print(f"Kvasir-v2 already present at {extract_dir}, skipping download.")
+        return extract_dir
 
+    data_root.mkdir(parents=True, exist_ok=True)
+    download_dir = data_root / "_kvasir_kaggle_dl"
+    download_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        from kaggle.api.kaggle_api_extended import KaggleApi
+        api = KaggleApi()
+        api.authenticate()
+        print(f"Downloading Kvasir-v2 from Kaggle ({KVASIR_V2_KAGGLE_SLUG}) ...")
+        api.dataset_download_files(
+            KVASIR_V2_KAGGLE_SLUG,
+            path=str(download_dir),
+            unzip=True,
+        )
+        return _ensure_kvasir_v2_structure(data_root, download_dir)
+    except Exception as e:
+        print(f"Kaggle download failed: {e}")
+        print(
+            "Set up Kaggle API credentials:\n"
+            "  1. Go to https://www.kaggle.com/settings -> Create New Token (downloads kaggle.json)\n"
+            "  2. On server: mkdir -p ~/.kaggle && mv kaggle.json ~/.kaggle/ && chmod 600 ~/.kaggle/kaggle.json\n"
+            "  Or set env: KAGGLE_USERNAME=your_user KAGGLE_KEY=your_key"
+        )
+        raise SystemExit(1) from e
+    finally:
+        if download_dir.exists():
+            import shutil
+            try:
+                shutil.rmtree(download_dir)
+            except OSError:
+                pass
+
+
+def download_kvasir_v2(
+    data_root: str = "data",
+    source: str = "kaggle",
+    url: Optional[str] = None,
+) -> Path:
+    """
+    Download Kvasir-v2 and extract to data_root/kvasir-v2.
+    If the dataset is already present (kvasir-v2/<class> folders exist), skip.
+
+    source: "kaggle" (default, uses Kaggle API; works on remote server with credentials),
+            "simula" (direct URL, often 404), or "manual" (print instructions only).
+    """
+    data_root = Path(data_root)
+    extract_dir = data_root / "kvasir-v2"
+    if extract_dir.exists() and any((extract_dir / c).is_dir() for c in KVASIR_CLASSES):
+        print(f"Kvasir-v2 already present at {extract_dir}, skipping download.")
+        return extract_dir
+
+    if source == "kaggle":
+        return download_kvasir_v2_kaggle(data_root=str(data_root))
+
+    if source == "manual":
+        print(
+            "Manual download options:\n"
+            "  • Kaggle: https://www.kaggle.com/datasets/plhalvorsen/KVASIR-v2-a-gastrointestinal-tract-dataset\n"
+            "  • Simula: https://datasets.simula.no/kvasir/ (Download Kvasir version 2)\n"
+            f"Extract so that class folders appear under: {extract_dir}"
+        )
+        raise SystemExit(1)
+
+    # source == "simula" or fallback
     data_root.mkdir(parents=True, exist_ok=True)
     zip_path = data_root / "kvasir-v2.zip"
     if url is None:
-        # Official page: https://datasets.simula.no/kvasir/ — use the "Download Kvasir version 2" link there
         url = "https://datasets.simula.no/kvasir/kvasir-v2.zip"
     try:
         import urllib.request
-        print(f"Downloading Kvasir-v2 from {url} ...")
+        print(f"Downloading Kvasir-v2 from Simula ({url}) ...")
         urllib.request.urlretrieve(url, zip_path)
     except Exception as e:
         print(
-            "Automatic download failed (the direct zip URL may not be available).\n"
-            "Download Kvasir v2 manually:\n"
-            "  1. Open https://datasets.simula.no/kvasir/\n"
-            "  2. Use the 'Download Kvasir version 2' link (kvasir-v2.zip, ~2.3GB)\n"
-            f"  3. Save the zip as: {zip_path}\n"
-            "  4. Run this script again, or run with --skip-download after extracting the zip to:\n"
-            f"     {extract_dir}"
+            "Simula direct download failed. Use Kaggle instead:\n"
+            "  python -m XAI_Enhancer_module.kvasir.download_and_prepare --data-root data --source kaggle\n"
+            "Or download manually from https://www.kaggle.com/datasets/plhalvorsen/KVASIR-v2-a-gastrointestinal-tract-dataset"
         )
         raise SystemExit(1) from e
     print("Extracting ...")
+    extract_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(extract_dir)
     return extract_dir
