@@ -39,7 +39,8 @@ def parse_args():
     p.add_argument("--optimizer", type=str, default="adamw", choices=["sgd", "adam", "adamw"])
     p.add_argument("--lr-scheduler", type=str, default="cosine", choices=["cosine", "step", "none"])
     p.add_argument("--num-workers", type=int, default=4)
-    p.add_argument("--pin-memory", action="store_true", default=True)
+    p.add_argument("--pin-memory", action="store_true", default=True, help="Pin memory for DataLoader (disable for MPS if you see errors)")
+    p.add_argument("--no-pin-memory", action="store_true", help="Disable pin_memory (use for MPS/CPU)")
     p.add_argument("--persistent-workers", action="store_true", default=True)
     p.add_argument("--prefetch-factor", type=int, default=2)
     p.add_argument("--grad-accum-steps", type=int, default=1)
@@ -129,6 +130,8 @@ def validate(model, loader, device):
 
 def main():
     args = parse_args()
+    if getattr(args, "no_pin_memory", False):
+        args.pin_memory = False
     torch.manual_seed(args.seed)
     device = torch.device(get_device(args.device))
 

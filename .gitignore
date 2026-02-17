@@ -18,3 +18,4 @@ dist
 /.venv_new
 .venv
 /enhanced_results
+*.pdf

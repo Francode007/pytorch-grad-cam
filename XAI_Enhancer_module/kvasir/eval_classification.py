@@ -53,8 +53,9 @@ def main():
     device = torch.device(get_device(args.device))
     data_root = Path(args.data_root)
     splits_dir = data_root / "splits"
-    if not (splits_dir / f"{args.split}.txt").exists():
-        raise FileNotFoundError(f"Split file not found: {splits_dir / args.split}.txt}. Run prepare_splits first.")
+    split_file = splits_dir / f"{args.split}.txt"
+    if not split_file.exists():
+        raise FileNotFoundError(f"Split file not found: {split_file}. Run prepare_splits first.")
     val_ds = KvasirDataset(str(data_root), split=args.split, transform=get_val_transforms(), splits_dir=str(splits_dir))
     loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 

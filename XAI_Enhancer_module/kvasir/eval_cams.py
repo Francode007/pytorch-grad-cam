@@ -117,10 +117,26 @@ def parse_args():
     p.add_argument("--split", type=str, default="val")
     p.add_argument("--arch", type=str, default="resnet50", choices=["resnet50", "resnet18", "resnet34", "densenet121"])
     p.add_argument("--checkpoint", type=str, required=True, help="Path to Kvasir-trained checkpoint")
-    p.add_argument("--methods", type=str, default="gradcam,gradcampp,enhancedcam",
-                  help="Comma-separated: gradcam, gradcampp, hirescam, scorecam, ablationcam, enhancedcam")
-    p.add_argument("--enhanced-method", type=str, default="stagewise",
-                  choices=["standard", "stagewise", "topk", "temp", "pyramid"], help="Aggregation for Enhanced CAM")
+    p.add_argument(
+        "--methods",
+        type=str,
+        default="gradcam,gradcampp,enhancedcam",
+        help="Comma-separated: gradcam, gradcampp, hirescam, scorecam, ablationcam, enhancedcam",
+    )
+    p.add_argument(
+        "--base-cam",
+        type=str,
+        default="GradCAM",
+        choices=["GradCAM", "GradCAM++", "HiResCAM", "ScoreCAM", "AblationCAM"],
+        help="Base CAM method to use for the enhanced variant (maps to corresponding *Enhanced class).",
+    )
+    p.add_argument(
+        "--enhanced-method",
+        type=str,
+        default="stagewise",
+        choices=["standard", "stagewise", "topk", "temp", "pyramid"],
+        help="Aggregation for Enhanced CAM",
+    )
     p.add_argument("--layer-mode", type=str, default="last", choices=["last", "last_5", "all"])
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--step-size", type=int, default=224)
@@ -128,6 +144,11 @@ def parse_args():
     p.add_argument("--device", type=str, default="auto")
     p.add_argument("--output-dir", type=str, default="runs/kvasir/cam_eval")
     p.add_argument("--num-workers", type=int, default=4)
+    p.add_argument(
+        "--compare-standard",
+        action="store_true",
+        help="Also evaluate standard CAMs (GradCAM, GradCAM++, HiResCAM, ScoreCAM, AblationCAM).",
+    )
     return p.parse_args()
 
 
@@ -146,18 +167,33 @@ def main():
 
     methods = [m.strip().lower() for m in args.methods.split(",")]
     all_results = []
-    compare_standard = "enhancedcam" in methods or any(m in methods for m in ["gradcam", "gradcam++", "hirescam", "scorecam", "ablationcam"])
+    # Determine whether to run standard methods
+    has_standard_in_methods = any(
+        m in methods for m in ["gradcam", "gradcam++", "hirescam", "scorecam", "ablationcam"]
+    )
+    run_standard = args.compare_standard or has_standard_in_methods
+
+    # For enhanced aggregation methods that rely on multiple layers, default to 'all' layers
+    enhanced_layer_mode = args.layer_mode
+    if args.enhanced_method in ("stagewise", "topk", "temp", "pyramid") and enhanced_layer_mode == "last":
+        print(
+            f"INFO: Enhanced method '{args.enhanced_method}' benefits from multiple layers. "
+            "Switching layer-mode from 'last' to 'all' for EnhancedCAM."
+        )
+        enhanced_layer_mode = "all"
 
     # Enhanced CAM (if requested)
     if "enhancedcam" in methods:
+        # Map chosen base CAM to its enhanced implementation
+        enhanced_cam_name = base_cam_map[args.base_cam]
         evaluator = KvasirProperAUCEvaluator(
             checkpoint_path=args.checkpoint,
             data_root=args.data_root,
             arch=args.arch,
             split=args.split,
             device_preference=args.device,
-            layer_mode=args.layer_mode,
-            enhanced_cam_method="GradCAMEnhanced",
+            layer_mode=enhanced_layer_mode,
+            enhanced_cam_method=enhanced_cam_name,
             extractor_cls=EnhancedExtractorV2,
             extractor_kwargs={"aggregation_config": metrics_config},
         )
@@ -180,8 +216,18 @@ def main():
         })
         print(f"EnhancedCAM: Ins={res['insertion_auc_mean']:.4f} Del={res['deletion_auc_mean']:.4f} ROAD={res['road_mean']:.4f}")
 
-    # Standard methods
-    standard_list = [m for m in methods if m in ["gradcam", "gradcam++", "hirescam", "scorecam", "ablationcam"] and m != "enhancedcam"]
+    # Standard methods (single last layer only)
+    standard_list = [
+        m
+        for m in methods
+        if m in ["gradcam", "gradcam++", "hirescam", "scorecam", "ablationcam"] and m != "enhancedcam"
+    ]
+    if not run_standard:
+        standard_list = []
+    elif run_standard and not standard_list:
+        # If user requested comparison but did not explicitly list any standard methods,
+        # default to the typical trio used in ImageNet experiments.
+        standard_list = ["gradcam", "gradcam++", "hirescam"]
     name_map = {"gradcam": "GradCAM", "gradcam++": "GradCAM++", "hirescam": "HiResCAM", "scorecam": "ScoreCAM", "ablationcam": "AblationCAM"}
     for m in standard_list:
         cam_name = name_map[m]
