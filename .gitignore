@@ -3,6 +3,7 @@ dist
 *.egg-info
 **/*.pyc
 /data
+/kvasir_data
 /xai_env
 /.DS_Store
 /XAI_Enhancer_module/imagenet_val_sample
@@ -15,4 +16,5 @@ dist
 /XAI_Enhancer_module/XAI_Enhancer_Colab_Runner.ipynb
 /XAI_Enhancer_module/run_xai_enhancer.py
 /.venv_new
+.venv
 /enhanced_results
