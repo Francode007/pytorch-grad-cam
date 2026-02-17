@@ -56,6 +56,8 @@ class PFCamExtractor:
         log_weights: Whether to log per-image weights (default: False)
         weight_log_dir: Directory for weight logs (default: ".")
         sharpen_gamma: Power-law sharpening exponent (default: 1.0 = no sharpening)
+        scoring_method: "cosine" (fidelity only) or "localization_aware" (composite)
+        loc_weight: Balance between fidelity and localization (0=all localization, 1=all fidelity)
     """
 
     def __init__(
@@ -72,6 +74,8 @@ class PFCamExtractor:
         weight_log_dir: str = ".",
         sharpen_gamma: float = 1.0,
         scoring_mode: str = "batched",       # "batched" or "sequential"
+        scoring_method: str = "localization_aware",  # "cosine" or "localization_aware"
+        loc_weight: float = 0.5,            # α: 0=all localization, 1=all fidelity
     ):
         self.model = model
         self.model_name = model_name
@@ -85,6 +89,8 @@ class PFCamExtractor:
         self.log_weights = log_weights
         self.sharpen_gamma = sharpen_gamma
         self.scoring_mode = scoring_mode
+        self.scoring_method = scoring_method
+        self.loc_weight = loc_weight
 
         # Weight logger
         self.weight_logger = WeightLogger(output_dir=weight_log_dir) if log_weights else None
@@ -165,7 +171,12 @@ class PFCamExtractor:
                 self._extract_all_layer_cams(single_tensor, targets)
 
             # 4. Compute per-layer importance scores
-            if self.scoring_mode == "sequential":
+            if self.scoring_method == "localization_aware":
+                scores = self._compute_layer_scores_localization_aware(
+                    single_tensor, actual_output, cam_per_layer,
+                    layer_activations, layer_grads, layer_shapes, lbl
+                )
+            elif self.scoring_mode == "sequential":
                 scores = self._compute_layer_scores_sequential(
                     single_tensor, actual_output, cam_per_layer,
                     layer_activations, layer_grads, lbl
@@ -370,6 +381,91 @@ class PFCamExtractor:
             cam_per_layer.append(scaled[:, None, :])
 
         return cam_per_layer, activations_list, grads_list, layer_shapes
+
+    # ------------------------------------------------------------------
+    # Localization-aware scoring
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _compute_spatial_concentration(
+        cam_per_layer: List[np.ndarray],
+        top_fraction: float = 0.1,
+    ) -> np.ndarray:
+        """
+        Compute spatial concentration (energy ratio) for each layer's CAM.
+
+        Measures what fraction of the CAM's total energy is concentrated in
+        the top `top_fraction` of pixels. Sharp, focused CAMs score high
+        (≈0.9); diffuse, uniform CAMs score low (≈0.1).
+
+        Args:
+            cam_per_layer: List of CAM arrays, each [1, H, W] or [1, 1, H, W]
+            top_fraction: Fraction of pixels considered "top" (default: 10%)
+
+        Returns:
+            np.ndarray of energy-ratio scores, shape (n_layers,)
+        """
+        n_layers = len(cam_per_layer)
+        loc_scores = np.zeros(n_layers, dtype=np.float64)
+
+        for i, cam in enumerate(cam_per_layer):
+            cam_flat = cam.flatten().astype(np.float64)
+            total_energy = cam_flat.sum()
+
+            if total_energy < 1e-10:
+                # Dead CAM — no localization signal
+                loc_scores[i] = 0.0
+                continue
+
+            # Sort descending and take top fraction
+            cam_sorted = np.sort(cam_flat)[::-1]
+            n_top = max(1, int(len(cam_flat) * top_fraction))
+            top_energy = cam_sorted[:n_top].sum()
+
+            loc_scores[i] = top_energy / total_energy
+
+        return loc_scores
+
+    def _compute_layer_scores_localization_aware(
+        self,
+        input_tensor: torch.Tensor,
+        actual_output: np.ndarray,
+        cam_per_layer: List[np.ndarray],
+        layer_activations: List[np.ndarray],
+        layer_grads: List[np.ndarray],
+        layer_shapes: List[Tuple[int, int]],
+        predicted_label: int,
+    ) -> np.ndarray:
+        """
+        Composite scoring: fidelity^α × localization^(1-α).
+
+        Combines the existing cosine-similarity fidelity score (how much
+        a layer preserves the prediction) with a spatial concentration
+        score (how focused the CAM is), using a geometric mean weighted
+        by self.loc_weight (α).
+
+        α = 1.0 → pure fidelity (identical to cosine scoring)
+        α = 0.0 → pure localization (ignore prediction relevance)
+        α = 0.5 → balanced (default)
+        """
+        # 1. Fidelity scores from existing batched method
+        fidelity_scores = self._compute_layer_scores_batched(
+            input_tensor, actual_output, cam_per_layer,
+            layer_activations, layer_grads, layer_shapes, predicted_label
+        )
+
+        # 2. Localization scores from spatial concentration
+        loc_scores = self._compute_spatial_concentration(cam_per_layer)
+
+        # 3. Composite: fidelity^α × localization^(1-α)
+        alpha = self.loc_weight
+        # Clamp to avoid log(0)
+        fidelity_safe = np.clip(fidelity_scores, 1e-10, None)
+        loc_safe = np.clip(loc_scores, 1e-10, None)
+
+        composite = (fidelity_safe ** alpha) * (loc_safe ** (1.0 - alpha))
+
+        return composite
 
     def _compute_layer_scores_batched(
         self,

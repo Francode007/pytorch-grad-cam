@@ -98,6 +98,12 @@ def parse_args():
     # Scoring verification
     parser.add_argument("--verify-scoring", action="store_true",
                         help="Run both batched & sequential scoring on first image to validate equivalence")
+    # Scoring method
+    parser.add_argument("--scoring-method", type=str, default="localization_aware",
+                        choices=["cosine", "localization_aware"],
+                        help="Layer scoring method: 'cosine' (fidelity only) or 'localization_aware' (composite)")
+    parser.add_argument("--loc-weight", type=float, default=0.5,
+                        help="Balance: 0=pure localization, 1=pure fidelity, 0.5=balanced (default)")
     return parser.parse_args()
 
 
@@ -152,6 +158,8 @@ def main():
             "log_weights": args.log_weights,
             "weight_log_dir": args.output_dir,
             "sharpen_gamma": args.sharpen_gamma,
+            "scoring_method": args.scoring_method,
+            "loc_weight": args.loc_weight,
         },
     )
 
