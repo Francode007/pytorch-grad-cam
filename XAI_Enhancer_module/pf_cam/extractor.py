@@ -71,6 +71,7 @@ class PFCamExtractor:
         log_weights: bool = False,
         weight_log_dir: str = ".",
         sharpen_gamma: float = 1.0,
+        scoring_mode: str = "batched",       # "batched" or "sequential"
     ):
         self.model = model
         self.model_name = model_name
@@ -83,6 +84,7 @@ class PFCamExtractor:
         self.norm_strategy = NormStrategy(norm_strategy)
         self.log_weights = log_weights
         self.sharpen_gamma = sharpen_gamma
+        self.scoring_mode = scoring_mode
 
         # Weight logger
         self.weight_logger = WeightLogger(output_dir=weight_log_dir) if log_weights else None
@@ -162,11 +164,17 @@ class PFCamExtractor:
             cam_per_layer, layer_activations, layer_grads, layer_shapes = \
                 self._extract_all_layer_cams(single_tensor, targets)
 
-            # 4. Compute masked activations and per-layer scores (BATCHED by stage)
-            scores = self._compute_layer_scores_batched(
-                single_tensor, actual_output, cam_per_layer,
-                layer_activations, layer_grads, layer_shapes, lbl
-            )
+            # 4. Compute per-layer importance scores
+            if self.scoring_mode == "sequential":
+                scores = self._compute_layer_scores_sequential(
+                    single_tensor, actual_output, cam_per_layer,
+                    layer_activations, layer_grads, lbl
+                )
+            else:
+                scores = self._compute_layer_scores_batched(
+                    single_tensor, actual_output, cam_per_layer,
+                    layer_activations, layer_grads, layer_shapes, lbl
+                )
 
             # 5. Aggregate using PF-CAM
             cams_tensor = [torch.from_numpy(c[0, :]).float() for c in cam_per_layer]
@@ -203,6 +211,86 @@ class PFCamExtractor:
     def get_weight_logger(self) -> Optional[WeightLogger]:
         """Return the weight logger for saving after all images."""
         return self.weight_logger
+
+    def verify_scoring(self, image_path: str, predicted_label: int) -> Dict:
+        """
+        Run BOTH batched and sequential scoring on a single image and compare.
+
+        Returns dict with per-layer scores from each method, max absolute diff,
+        and a boolean indicating equivalence (within tolerance 1e-4).
+        """
+        import time
+
+        input_tensor = self._load_image(image_path)
+        if input_tensor is None:
+            return {"error": f"Could not load {image_path}"}
+
+        actual_output = self._get_actual_output(input_tensor)
+
+        targets = [ClassifierOutputTarget(predicted_label)]
+        cam_per_layer, layer_activations, layer_grads, layer_shapes = \
+            self._extract_all_layer_cams(input_tensor, targets)
+
+        # --- Batched scoring ---
+        t0 = time.time()
+        scores_batched = self._compute_layer_scores_batched(
+            input_tensor, actual_output, cam_per_layer,
+            layer_activations, layer_grads, layer_shapes, predicted_label
+        )
+        t_batched = time.time() - t0
+
+        # Need a clean forward state — extract CAMs again to reset model
+        cam_per_layer2, layer_activations2, layer_grads2, _ = \
+            self._extract_all_layer_cams(input_tensor, targets)
+
+        # --- Sequential scoring ---
+        t0 = time.time()
+        scores_sequential = self._compute_layer_scores_sequential(
+            input_tensor, actual_output, cam_per_layer2,
+            layer_activations2, layer_grads2, predicted_label
+        )
+        t_sequential = time.time() - t0
+
+        # Compare
+        diff = np.abs(scores_batched - scores_sequential)
+        max_diff = float(diff.max())
+        mean_diff = float(diff.mean())
+        equivalent = max_diff < 1e-4
+
+        print("\n" + "=" * 70)
+        print("SCORING VERIFICATION: Batched vs Sequential")
+        print("=" * 70)
+        print(f"  Image: {image_path}")
+        print(f"  Label: {predicted_label}")
+        print(f"  Layers: {len(self.conv_layers)}")
+        print(f"  Time — Batched: {t_batched:.2f}s, Sequential: {t_sequential:.2f}s")
+        print(f"  Max abs score diff:  {max_diff:.6f}")
+        print(f"  Mean abs score diff: {mean_diff:.6f}")
+
+        if not equivalent:
+            print(f"\n  ⚠️  SCORES DIVERGE (max diff={max_diff:.6f} > 1e-4)")
+            print(f"  {'Layer':<40s}  {'Batched':>10s}  {'Sequential':>10s}  {'Diff':>10s}")
+            print(f"  {'─'*40}  {'─'*10}  {'─'*10}  {'─'*10}")
+            # Show top 10 most divergent layers
+            top_divergent = np.argsort(diff)[::-1][:10]
+            for idx in top_divergent:
+                name = self._layer_names[idx] if idx < len(self._layer_names) else f"layer_{idx}"
+                print(f"  {name:<40s}  {scores_batched[idx]:>10.6f}  "
+                      f"{scores_sequential[idx]:>10.6f}  {diff[idx]:>10.6f}")
+        else:
+            print(f"\n  ✅ Scores are equivalent (max diff={max_diff:.6f})")
+
+        print("=" * 70)
+
+        return {
+            "scores_batched": scores_batched,
+            "scores_sequential": scores_sequential,
+            "max_diff": max_diff,
+            "mean_diff": mean_diff,
+            "equivalent": equivalent,
+            "time_batched": t_batched,
+            "time_sequential": t_sequential,
+        }
 
     # ------------------------------------------------------------------
     # Core Extraction Logic

@@ -25,6 +25,7 @@ import argparse
 import sys
 import os
 import time
+import torch
 import pandas as pd
 from pathlib import Path
 
@@ -51,7 +52,7 @@ def parse_args():
     parser.add_argument("--imagenet-path", type=str,
                         default=str(project_root / "imagenet_val_sample"),
                         help="Path to ImageNet validation images")
-    parser.add_argument("--count", type=int, default=50,
+    parser.add_argument("--count", type=int, default=100,
                         help="Number of images to evaluate")
     parser.add_argument("--start", type=int, default=0,
                         help="Start index for batch processing")
@@ -90,10 +91,13 @@ def parse_args():
     parser.add_argument("--compare-standard", action="store_true",
                         help="Also run standard GradCAM, GradCAM++, HiResCAM for comparison")
     # Step size for evaluation
-    parser.add_argument("--step-size", type=int, default=224,
+    parser.add_argument("--step-size", type=int, default=50,
                         help="Step size for insertion/deletion evaluation")
     parser.add_argument("--batch-size", type=int, default=64,
                         help="Batch size for evaluation inference")
+    # Scoring verification
+    parser.add_argument("--verify-scoring", action="store_true",
+                        help="Run both batched & sequential scoring on first image to validate equivalence")
     return parser.parse_args()
 
 
@@ -150,6 +154,45 @@ def main():
             "sharpen_gamma": args.sharpen_gamma,
         },
     )
+
+    # --- Scoring verification (optional) ---
+    if args.verify_scoring:
+        print("\n🔍 Running scoring verification on first image...\n")
+        # Eagerly create the extractor for verification
+        verifier = PFCamExtractor(
+            model=evaluator.model,
+            model_name=args.model,
+            conv_layers=evaluator.conv_layers,
+            device_preference=str(evaluator.device),
+            aggregation_config=agg_config,
+            norm_strategy=args.norm_strategy,
+            sharpen_gamma=args.sharpen_gamma,
+        )
+        # Find the first available image
+        import glob
+        img_extensions = ("*.JPEG", "*.jpeg", "*.jpg", "*.png")
+        first_image = None
+        for ext in img_extensions:
+            matches = sorted(glob.glob(os.path.join(args.imagenet_path, "**", ext), recursive=True))
+            if matches:
+                first_image = matches[0]
+                break
+        if first_image:
+            # Get predicted label
+            from PIL import Image as PILImage
+            img = PILImage.open(first_image).convert("RGB")
+            xform = evaluator.transform
+            img_t = xform(img).unsqueeze(0).to(evaluator.device)
+            with torch.no_grad():
+                pred_label = evaluator.model(img_t).argmax(dim=1).item()
+            result = verifier.verify_scoring(first_image, pred_label)
+            if not result.get("equivalent", True):
+                print("\n⚠️  Batched and sequential scores diverge!")
+                print("    Consider running with sequential scoring for accuracy.")
+                print("    To switch: the extractor now supports scoring_mode='sequential'")
+        else:
+            print("  No images found for scoring verification.")
+        del verifier  # Free memory before main evaluation
 
     # Run PF-CAM evaluation
     start_time = time.time()
