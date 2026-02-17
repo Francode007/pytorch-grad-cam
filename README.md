@@ -170,7 +170,7 @@ The Enhanced CAM method introduces sophisticated layer selection modes that leve
 
 - ✅ **Multi-layer Integration**: Combines information from multiple layers using cosine similarity weighting
 - ✅ **Proper AUC Evaluation**: Implements correct insertion/deletion AUC calculations in [0,1] range
-- ✅ **ROAD Metric Support**: Includes ROAD (RemOve And Debias) scores for robustness evaluation
+- ✅ **ROAD Metric Support**: Includes ROAD (RemOve And Debias) scores for robustness evaluation. ROADCombined = `(LoRF - MoRF) / 2` (Confidence based).
 - ✅ **Optimized Performance**: Caching and batch processing for efficient evaluation
 - ✅ **Comprehensive Metrics**: Insertion AUC, Deletion AUC, and ROAD scores with statistical analysis
 
@@ -243,8 +243,9 @@ comparison_df = evaluator.compare_enhanced_vs_standard(
 - Perfect score: 0.0 (immediate confidence drop)
 
 ### ROAD Score
-- **Lower is better** (typically small positive values)
-- Measures robustness and faithfulness of explanations
+- **ROAD Combined Score**: `(LoRF - MoRF) / 2`
+- **Higher is better** (range: [-0.5, 0.5]) when using Softmax confidence.
+- Measures robustness: High score = Removing relevant pixels drops confidence (MoRF low) AND removing irrelevant pixels keeps confidence high (LoRF high).
 - Accounts for both pixel importance and spatial coherence
 
 ## Supported Models

@@ -358,7 +358,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             ROADCombined score (float). Higher = better explanation.
         """
         from pytorch_grad_cam.metrics.road import ROADCombined
-        from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+        from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget, ClassifierOutputSoftmaxTarget
         
         # Prepare inputs in the shape ROADCombined expects
         # input_tensor: [1, C, H, W]  cam: [1, H, W]
@@ -367,6 +367,9 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         else:
             input_t = image_tensor
         
+        # Ensure input tensor is on correct device
+        input_t = input_t.to(self.device)
+        
         if saliency_map.ndim == 2:
             cam_np = saliency_map[np.newaxis, :, :]
         elif saliency_map.ndim == 3 and saliency_map.shape[0] != 1:
@@ -374,7 +377,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         else:
             cam_np = saliency_map
         
-        targets = [ClassifierOutputTarget(predicted_label)]
+        targets = [ClassifierOutputSoftmaxTarget(predicted_label)]
         
         try:
             road_metric = ROADCombined(percentiles=percentiles)
@@ -779,7 +782,8 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
     def evaluate_method(self, cam_method_name: str, max_images: int = 50, 
                        classes_filter: List[str] = None,
                        start_index: int = 0, end_index: int = None,
-                       return_raw_data: bool = False, batch_size: int = 64, num_workers: int = 4) -> Dict[str, any]:
+                       return_raw_data: bool = False, batch_size: int = 64, num_workers: int = 4,
+                       step_size: int = 50) -> Dict[str, any]:
         """
         Evaluate a standard CAM method on ImageNet.
         
@@ -835,7 +839,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                 
                 # Evaluate saliency map using pre-fetched tensor
                 metrics = self._evaluate_saliency_map(
-                    image_tensor, saliency_map, predicted_label, step_size=50, verbose=False, batch_size=batch_size
+                    image_tensor, saliency_map, predicted_label, step_size=step_size, verbose=False, batch_size=batch_size
                 )
                 
                 insertion_aucs.append(metrics['insertion_auc'])

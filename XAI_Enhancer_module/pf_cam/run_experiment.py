@@ -215,7 +215,7 @@ def _run_standard_comparison(evaluator, args):
     for method_name, method_cls in standard_methods.items():
         print(f"\n  Running {method_name}...")
         results = evaluator.evaluate_method(
-            method_cls,
+            method_name,
             max_images=args.count,
             step_size=args.step_size,
             start_index=args.start,
