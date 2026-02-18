@@ -66,5 +66,8 @@ def load_kvasir_checkpoint(
     except Exception:
         ckpt = torch.load(path, map_location=device, weights_only=False)
     state = ckpt.get("model_state_dict") or ckpt.get("state_dict") or ckpt
+    # Checkpoints saved from torch.compile() have keys prefixed with "_orig_mod."
+    if state and any(k.startswith("_orig_mod.") for k in state.keys()):
+        state = {k.replace("_orig_mod.", "", 1): v for k, v in state.items()}
     model.load_state_dict(state, strict=strict)
     return model
