@@ -65,6 +65,28 @@ python -m XAI_Enhancer_module.kvasir.train \
 
 Checkpoints: `runs/kvasir/resnet50/best.pth`, `last.pth`, and `metrics.json`.
 
+### A100 40GB and sequential multi-model training
+
+For an A100 40GB GPU you can use the `--a100` preset (batch 128, AMP bfloat16, `torch.compile`, 8 workers):
+
+```bash
+python -m XAI_Enhancer_module.kvasir.train \
+  --data-root data/kvasir-v2 --arch resnet50 --epochs 50 \
+  --output-dir runs/kvasir --a100
+```
+
+To train several architectures **sequentially** on the server and save everything under one output directory (e.g. on a remote path), use:
+
+```bash
+python -m XAI_Enhancer_module.kvasir.train_models_sequential \
+  --archs resnet18 resnet34 resnet50 densenet121 \
+  --data-root data/kvasir-v2 \
+  --output-dir /path/on/server/kvasir_runs \
+  --epochs 50 --a100
+```
+
+Each model is trained one after another; checkpoints go to `--output-dir/<arch>/` (e.g. `best.pth`, `last.pth`, `metrics.json`). A manifest is written to `--output-dir/sequential_training_manifest.json` with status and paths for each run.
+
 ## 3. Classification evaluation (accuracy and F1)
 
 Uses the existing codebase (no new metric code); reports accuracy and F1 (macro/weighted) on the validation set.

@@ -44,13 +44,24 @@ def parse_args():
     p.add_argument("--persistent-workers", action="store_true", default=True)
     p.add_argument("--prefetch-factor", type=int, default=2)
     p.add_argument("--grad-accum-steps", type=int, default=1)
-    p.add_argument("--amp", action="store_true", default=False, help="Use automatic mixed precision")
+    p.add_argument("--amp", action="store_true", default=False, help="Use automatic mixed precision (recommended for A100)")
+    p.add_argument("--amp-dtype", type=str, default="float16", choices=["float16", "bfloat16"], help="AMP dtype (bfloat16 often better on A100)")
+    p.add_argument("--compile", action="store_true", default=False, help="Use torch.compile(model) for speed (PyTorch 2+, CUDA)")
     p.add_argument("--device", type=str, default="auto")
     p.add_argument("--output-dir", type=str, default="runs/kvasir")
     p.add_argument("--save-every", type=int, default=0, help="Save checkpoint every N epochs (0 = only best/last)")
     p.add_argument("--log-interval", type=int, default=20)
     p.add_argument("--resume", type=str, default="", help="Resume from checkpoint path")
-    return p.parse_args()
+    p.add_argument("--a100", action="store_true", help="Preset for A100 40GB: batch_size=128, amp, bfloat16, compile, num_workers=8")
+    args = p.parse_args()
+    if getattr(args, "a100", False):
+        args.batch_size = 128
+        args.amp = True
+        args.amp_dtype = "bfloat16"
+        args.compile = True
+        args.num_workers = 8
+        args.prefetch_factor = 4
+    return args
 
 
 def create_loaders(args, data_root: Path):
@@ -86,6 +97,7 @@ def create_loaders(args, data_root: Path):
 
 def train_epoch(model, loader, criterion, optimizer, device, scaler, args, epoch):
     model.train()
+    amp_dtype = getattr(torch, getattr(args, "amp_dtype", "float16"), torch.float16)
     total_loss = 0.0
     n = 0
     pbar = tqdm(loader, desc=f"Epoch {epoch}", leave=False)
@@ -93,10 +105,13 @@ def train_epoch(model, loader, criterion, optimizer, device, scaler, args, epoch
     for i, (images, labels, _) in enumerate(pbar):
         images, labels = images.to(device), labels.to(device)
         if args.amp and device.type == "cuda":
-            with torch.amp.autocast("cuda"):
+            with torch.amp.autocast("cuda", dtype=amp_dtype):
                 logits = model(images)
                 loss = criterion(logits, labels) / args.grad_accum_steps
-            scaler.scale(loss).backward()
+            if scaler is not None:
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
         else:
             logits = model(images)
             loss = criterion(logits, labels) / args.grad_accum_steps
@@ -104,7 +119,7 @@ def train_epoch(model, loader, criterion, optimizer, device, scaler, args, epoch
         total_loss += loss.item() * images.size(0)
         n += images.size(0)
         if (i + 1) % args.grad_accum_steps == 0:
-            if args.amp and device.type == "cuda":
+            if scaler is not None:
                 scaler.step(optimizer)
                 scaler.update()
             else:
@@ -116,12 +131,16 @@ def train_epoch(model, loader, criterion, optimizer, device, scaler, args, epoch
 
 
 @torch.no_grad()
-def validate(model, loader, device):
+def validate(model, loader, device, use_amp=False, amp_dtype=torch.float16):
     model.eval()
     correct, total = 0, 0
     for images, labels, _ in loader:
         images, labels = images.to(device), labels.to(device)
-        logits = model(images)
+        if use_amp and device.type == "cuda":
+            with torch.amp.autocast("cuda", dtype=amp_dtype):
+                logits = model(images)
+        else:
+            logits = model(images)
         pred = logits.argmax(dim=1)
         correct += (pred == labels).sum().item()
         total += labels.size(0)
@@ -134,6 +153,8 @@ def main():
         args.pin_memory = False
     torch.manual_seed(args.seed)
     device = torch.device(get_device(args.device))
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
 
     data_root = Path(args.data_root)
     if not data_root.exists():
@@ -144,6 +165,12 @@ def main():
     if args.resume:
         load_kvasir_checkpoint(model, args.resume, device)
     model = model.to(device)
+    if getattr(args, "compile", False) and device.type == "cuda":
+        try:
+            model = torch.compile(model, mode="reduce-overhead")
+            print("Model compiled with torch.compile(mode='reduce-overhead')")
+        except Exception as e:
+            print(f"torch.compile skipped: {e}")
     criterion = nn.CrossEntropyLoss()
     if args.optimizer == "adamw":
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -157,7 +184,9 @@ def main():
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.1)
     else:
         scheduler = None
-    scaler = torch.amp.GradScaler("cuda") if (args.amp and device.type == "cuda") else None
+    amp_dtype = getattr(torch, getattr(args, "amp_dtype", "float16"), torch.float16)
+    use_scaler = args.amp and device.type == "cuda" and amp_dtype == torch.float16
+    scaler = torch.amp.GradScaler("cuda") if use_scaler else None
 
     out_dir = Path(args.output_dir) / args.arch
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -166,7 +195,7 @@ def main():
 
     for epoch in range(1, args.epochs + 1):
         train_loss = train_epoch(model, train_loader, criterion, optimizer, device, scaler, args, epoch)
-        val_acc = validate(model, val_loader, device)
+        val_acc = validate(model, val_loader, device, use_amp=args.amp, amp_dtype=amp_dtype)
         if scheduler:
             scheduler.step()
         metrics_log.append({"epoch": epoch, "train_loss": train_loss, "val_acc": val_acc})
