@@ -116,6 +116,16 @@ python -m XAI_Enhancer_module.kvasir.eval_cams \
 
 Output: `runs/kvasir/cam_eval/comparison_report.csv` with Insertion_Mean, Deletion_Mean, ROAD_Mean per method.
 
+**If you hit OOM** (out of memory on RAM or VRAM), use smaller batches and disable workers:
+```bash
+python -m XAI_Enhancer_module.kvasir.eval_cams \
+  --batch-size 4 \
+  --layer-batch-size 4 \
+  --num-workers 0 \
+  --max-images 100 \
+  ...
+```
+
 ## .gitignore
 
 The repo `.gitignore` already includes `/data`, `/kvasir_data`, and `.venv` so the dataset and virtual environment are not committed.

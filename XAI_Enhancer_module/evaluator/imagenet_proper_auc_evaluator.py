@@ -160,7 +160,6 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         Compute insertion AUC by progressively adding pixels in order of importance.
         Optimized with full vectorization for large batch processing.
         """
-        t0 = time.time()
         # Ensure image tensor is 3D [C, H, W]
         image_tensor = image_tensor.to(self.device)
         if image_tensor.dim() == 4:
@@ -184,7 +183,6 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             steps.append(n_pixels)
         
         num_steps = len(steps)
-        t1 = time.time()
         
         # 3. Create a Rank Map for Vectorized Masking
         # We want to find pixels where rank < threshold
@@ -199,23 +197,17 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         # Create Thresholds Tensor [num_steps, 1, 1]
         thresholds = torch.tensor(steps, device=self.device).view(-1, 1, 1)
         
-        # Create Masks [num_steps, 1, H, W]
-        masks = (rank_map < thresholds).unsqueeze(1) # [num_steps, 1, H, W]
-        t2 = time.time()
-        
-        
-        # 4. Generate Batch of Modified Images [num_steps, C, H, W]
-        batch_tensor = image_tensor.unsqueeze(0) * masks.float()
-        if self.device.type == 'cuda': torch.cuda.synchronize()
-        
-        # 5. Run Batched Inference
+        # 4. Run Batched Inference - process in chunks to avoid materializing full [num_steps, C, H, W]
         confidences = []
         self.clean_model.eval()
+        img_expanded = image_tensor.unsqueeze(0)  # [1, C, H, W]
         
-        # Process in chunks of 'batch_size'
         for i in range(0, num_steps, batch_size):
             end_idx = min(i + batch_size, num_steps)
-            mini_batch = batch_tensor[i:end_idx]
+            # Create only this chunk's masks [chunk_size, 1, H, W]
+            chunk_thresholds = thresholds[i:end_idx]  # [chunk_size, 1, 1]
+            chunk_masks = (rank_map < chunk_thresholds).unsqueeze(1).float()
+            mini_batch = img_expanded * chunk_masks  # [chunk_size, C, H, W]
             
             with torch.no_grad():
                 outputs = self.clean_model(mini_batch)
@@ -224,9 +216,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                 batch_confidences = torch.softmax(outputs, dim=1)[:, predicted_label]
                 confidences.extend(batch_confidences.tolist())
         
-        if self.device.type == 'cuda': torch.cuda.synchronize()
-        
-        # 6. Calculate AUC
+        # 5. Calculate AUC
         if not confidences:
             return [], 0.0
             
@@ -275,23 +265,17 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         # Create Thresholds Tensor [num_steps, 1, 1]
         thresholds = torch.tensor(steps, device=self.device).view(-1, 1, 1)
         
-        # Create Masks [num_steps, 1, H, W]
-        # For deletion, we want to KEEP pixels where rank >= count
-        # (i.e. we remove pixels with rank 0, 1, ..., count-1)
-        # So we keep if rank >= threshold
-        masks = (rank_map >= thresholds).unsqueeze(1) # [num_steps, 1, H, W]
-        
-        # 4. Generate Batch of Modified Images [num_steps, C, H, W]
-        batch_tensor = image_tensor.unsqueeze(0) * masks.float()
-        
-        # 5. Run Batched Inference
+        # 4. Run Batched Inference - process in chunks to avoid materializing full [num_steps, C, H, W]
         confidences = []
         self.clean_model.eval()
+        img_expanded = image_tensor.unsqueeze(0)  # [1, C, H, W]
         
-        # Process in chunks of 'batch_size'
         for i in range(0, num_steps, batch_size):
             end_idx = min(i + batch_size, num_steps)
-            mini_batch = batch_tensor[i:end_idx]
+            # Create only this chunk's masks (deletion: keep pixels where rank >= threshold)
+            chunk_thresholds = thresholds[i:end_idx]  # [chunk_size, 1, 1]
+            chunk_masks = (rank_map >= chunk_thresholds).unsqueeze(1).float()
+            mini_batch = img_expanded * chunk_masks
             
             with torch.no_grad():
                 if self.device.type == 'cuda':
@@ -604,7 +588,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                     predicted_labels.append(predicted_label)
                     
                 except Exception as e:
-                    print(f"Error processing batch {i} (paths: {image_path_batch}): {e}")
+                    print(f"Error processing image {image_path}: {e}")
                     predicted_labels.append(0)  # Default to first class
         
         return predicted_labels
@@ -678,11 +662,12 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         deletion_aucs = []
         road_scores = []
         
-        # Create dataset and loader
+        # Create dataset and loader (use passed batch_size; avoid large batches that cause OOM)
         dataset = _ImageNetDataset(image_paths, predicted_labels, class_names, self.transform)
+        effective_batch_size = min(batch_size, len(dataset)) if len(dataset) > 0 else 1
         loader = DataLoader(
             dataset, 
-            batch_size=min(32, len(dataset)) if len(dataset) > 0 else 1, # Default robust batch size
+            batch_size=effective_batch_size,
             num_workers=num_workers,
             pin_memory=True if self.device.type == 'cuda' else False,
             prefetch_factor=2 if num_workers > 0 else None,

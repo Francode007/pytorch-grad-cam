@@ -138,8 +138,9 @@ def parse_args():
         help="Aggregation for Enhanced CAM",
     )
     p.add_argument("--layer-mode", type=str, default="last", choices=["last", "last_5", "all"])
-    p.add_argument("--batch-size", type=int, default=32)
-    p.add_argument("--step-size", type=int, default=224)
+    p.add_argument("--layer-batch-size", type=int, default=32, help="Layers processed in parallel (lower=less VRAM with layer-mode all)")
+    p.add_argument("--batch-size", type=int, default=32, help="Batch size for CAM eval (lower=less RAM/VRAM)")
+    p.add_argument("--step-size", type=int, default=224, help="Pixels per step in insertion/deletion (larger=less memory)")
     p.add_argument("--max-images", type=int, default=-1, help="Cap number of val images (-1 = all)")
     p.add_argument("--device", type=str, default="auto")
     p.add_argument("--output-dir", type=str, default="runs/kvasir/cam_eval")
@@ -163,6 +164,7 @@ def main():
         "AblationCAM": "AblationCAMEnhanced",
     }
     metrics_config = {"type": args.enhanced_method, "k": 5, "k_percent": 0.2, "temp": 0.05, "beta": 0.3, "soft": True}
+    extractor_kwargs_base = {"layer_batch_size": args.layer_batch_size}
     from XAI_Enhancer_module.enhanced_combiner.extractor_v2 import EnhancedExtractorV2
 
     methods = [m.strip().lower() for m in args.methods.split(",")]
@@ -195,7 +197,7 @@ def main():
             layer_mode=enhanced_layer_mode,
             enhanced_cam_method=enhanced_cam_name,
             extractor_cls=EnhancedExtractorV2,
-            extractor_kwargs={"aggregation_config": metrics_config},
+            extractor_kwargs={**extractor_kwargs_base, "aggregation_config": metrics_config},
         )
         res = evaluator.evaluate_enhanced_cam(
             max_images=args.max_images,
@@ -241,7 +243,7 @@ def main():
             layer_mode="last",
             enhanced_cam_method=std_cam,
             extractor_cls=EnhancedExtractorV2,
-            extractor_kwargs={"aggregation_config": {"type": "standard"}},
+            extractor_kwargs={**extractor_kwargs_base, "aggregation_config": {"type": "standard"}},
         )
         res = evaluator.evaluate_enhanced_cam(
             max_images=args.max_images,
