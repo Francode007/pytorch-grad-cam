@@ -207,7 +207,7 @@ def main():
             num_workers=args.num_workers,
         )
         all_results.append({
-            "Method": f"EnhancedCAM ({args.enhanced_method})",
+            "Method": f"EnhancedCAM ({args.base_cam})",
             "Insertion_Mean": res["insertion_auc_mean"],
             "Insertion_Std": res["insertion_auc_std"],
             "Deletion_Mean": res["deletion_auc_mean"],
