@@ -31,7 +31,7 @@ def parse_args():
     p.add_argument("--data-root", type=str, default="data/kvasir-v2", help="Kvasir-v2 root (or parent of kvasir-v2)")
     p.add_argument("--val-ratio", type=float, default=0.2, help="Validation fraction (80:20 default)")
     p.add_argument("--seed", type=int, default=42, help="Random seed for split")
-    p.add_argument("--arch", type=str, default="resnet50", choices=["resnet50", "resnet18", "resnet34", "densenet121"])
+    p.add_argument("--arch", type=str, default="resnet50", choices=["resnet50", "resnet18", "resnet34", "densenet121", "vgg16", "vgg19"])
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--lr", type=float, default=1e-4)

@@ -115,7 +115,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="Evaluate Standard vs Enhanced CAM on Kvasir-v2 val set")
     p.add_argument("--data-root", type=str, default="data/kvasir-v2")
     p.add_argument("--split", type=str, default="val")
-    p.add_argument("--arch", type=str, default="resnet50", choices=["resnet50", "resnet18", "resnet34", "densenet121"])
+    p.add_argument("--arch", type=str, default="resnet50", choices=["resnet50", "resnet18", "resnet34", "densenet121", "vgg16", "vgg19"])
     p.add_argument("--checkpoint", type=str, required=True, help="Path to Kvasir-trained checkpoint")
     p.add_argument(
         "--methods",

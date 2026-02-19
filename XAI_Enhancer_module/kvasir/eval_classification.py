@@ -27,7 +27,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="Evaluate Kvasir model: accuracy and F1 on validation set")
     p.add_argument("--data-root", type=str, default="data/kvasir-v2", help="Kvasir-v2 root")
     p.add_argument("--split", type=str, default="val")
-    p.add_argument("--arch", type=str, default="resnet50", choices=["resnet50", "resnet18", "resnet34", "densenet121"])
+    p.add_argument("--arch", type=str, default="resnet50", choices=["resnet50", "resnet18", "resnet34", "densenet121", "vgg16", "vgg19"])
     p.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint (e.g. best.pth)")
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--num-workers", type=int, default=4)

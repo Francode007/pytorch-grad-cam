@@ -79,7 +79,7 @@ To train several architectures **sequentially** on the server and save everythin
 
 ```bash
 python -m XAI_Enhancer_module.kvasir.train_models_sequential \
-  --archs resnet18 resnet34 resnet50 densenet121 \
+  --archs resnet18 resnet34 resnet50 densenet121 vgg16 vgg19 \
   --data-root data/kvasir-v2 \
   --output-dir /path/on/server/kvasir_runs \
   --epochs 50 --a100

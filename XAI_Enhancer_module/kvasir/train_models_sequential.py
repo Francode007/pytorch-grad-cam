@@ -20,7 +20,7 @@ from datetime import datetime
 # Project root for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-AVAILABLE_ARCHS = ["resnet18", "resnet34", "resnet50", "densenet121"]
+AVAILABLE_ARCHS = ["resnet18", "resnet34", "resnet50", "densenet121", "vgg16", "vgg19"]
 
 
 def parse_args():

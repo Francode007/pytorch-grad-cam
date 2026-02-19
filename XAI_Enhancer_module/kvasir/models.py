@@ -16,6 +16,8 @@ ARCH_HEAD = {
     "resnet18": ("fc", 512),
     "resnet34": ("fc", 512),
     "densenet121": ("classifier", 1024),
+    "vgg16": ("classifier", 4096),
+    "vgg19": ("classifier", 4096),
 }
 
 
@@ -44,6 +46,12 @@ def build_kvasir_model(
     elif arch == "densenet121":
         model = models.densenet121(weights="IMAGENET1K_V1" if pretrained else None)
         model.classifier = nn.Linear(in_features, num_classes)
+    elif arch == "vgg16":
+        model = models.vgg16(weights="IMAGENET1K_V1" if pretrained else None)
+        model.classifier[6] = nn.Linear(in_features, num_classes)
+    elif arch == "vgg19":
+        model = models.vgg19(weights="IMAGENET1K_V1" if pretrained else None)
+        model.classifier[6] = nn.Linear(in_features, num_classes)
     else:
         raise ValueError(arch)
     return model
