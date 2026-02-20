@@ -1,6 +1,6 @@
 """
 IBS (Pre-processed) dataset: load, split (80:20), and download utilities.
-Uses ImageNet mean/std normalization and ImageNet-style resize + crop (transfer learning).
+Uses IBS dataset-specific mean/std normalization with ImageNet-style resize + crop.
 """
 
 import os
@@ -26,9 +26,9 @@ IBS_NUM_CLASSES = len(IBS_CLASSES)
 CLASS_TO_IDX = {c: i for i, c in enumerate(IBS_CLASSES)}
 IDX_TO_CLASS = {i: c for i, c in enumerate(IBS_CLASSES)}
 
-# ImageNet normalization (used for pretrained backbones)
-IMAGENET_MEAN = [0.485, 0.456, 0.406]
-IMAGENET_STD = [0.229, 0.224, 0.225]
+# IBS dataset-specific normalization (computed from training images)
+IBS_MEAN = [0.6380, 0.3422, 0.2275]
+IBS_STD = [0.2448, 0.2060, 0.1710]
 
 
 def get_train_transforms(crop_size: int = 224, resize_size: int = 256):
@@ -38,7 +38,7 @@ def get_train_transforms(crop_size: int = 224, resize_size: int = 256):
         T.RandomCrop(crop_size),
         T.RandomHorizontalFlip(p=0.5),
         T.ToTensor(),
-        T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        T.Normalize(mean=IBS_MEAN, std=IBS_STD),
     ])
 
 
@@ -48,7 +48,7 @@ def get_val_transforms(crop_size: int = 224, resize_size: int = 256):
         T.Resize(resize_size),
         T.CenterCrop(crop_size),
         T.ToTensor(),
-        T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        T.Normalize(mean=IBS_MEAN, std=IBS_STD),
     ])
 
 
