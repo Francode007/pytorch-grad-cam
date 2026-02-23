@@ -7,11 +7,14 @@ Reuses ImageNetProperAUCEvaluator logic by subclassing and overriding data loadi
 import argparse
 import os
 import sys
+import time
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import torch
 import torchvision.transforms as transforms
+from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -28,6 +31,10 @@ from XAI_Enhancer_module.evaluator.imagenet_proper_auc_evaluator import (
     _ImageNetDataset,
 )
 from XAI_Enhancer_module.utils.model_utils import get_device
+from XAI_Enhancer_module.utils.layercam_utils import (
+    get_layercam_stage_layers,
+    extract_layercam_fused,
+)
 
 
 class IBSProperAUCEvaluator(ImageNetProperAUCEvaluator):
@@ -121,7 +128,8 @@ def parse_args():
         "--methods",
         type=str,
         default="gradcam,gradcampp,enhancedcam",
-        help="Comma-separated: gradcam, gradcampp, hirescam, scorecam, ablationcam, enhancedcam",
+        help="Comma-separated: gradcam, gradcampp, hirescam, scorecam, ablationcam, "
+             "enhancedcam, layercam, layercam_fused",
     )
     p.add_argument(
         "--base-cam",
@@ -130,6 +138,11 @@ def parse_args():
         choices=["GradCAM", "GradCAM++", "HiResCAM", "ScoreCAM", "AblationCAM"],
         help="Base CAM method to use for the enhanced variant.",
     )
+    p.add_argument("--gamma", type=float, default=2.0,
+                    help="LayerCAM fusion: tanh scaling factor for shallow layers (paper Eq. 9, default 2)")
+    p.add_argument("--fuse-stages", type=str, default=None,
+                    help="LayerCAM fusion: comma-separated 1-based stage indices to fuse "
+                         "(e.g. '2,3,4' for ResNet). Default: all stages except stage 1 for VGG, all for ResNet/DenseNet)")
     p.add_argument(
         "--enhanced-method",
         type=str,
@@ -258,6 +271,120 @@ def main():
             "Images_Evaluated": res["num_images"],
         })
         print(f"{cam_name}: Ins={res['insertion_auc_mean']:.4f} Del={res['deletion_auc_mean']:.4f} ROAD={res['road_mean']:.4f}")
+
+    # ------------------------------------------------------------------
+    # LayerCAM (single-layer, last conv) and LayerCAM-Fused (multi-layer)
+    # ------------------------------------------------------------------
+    run_layercam = "layercam" in methods
+    run_layercam_fused = "layercam_fused" in methods
+
+    if run_layercam or run_layercam_fused:
+        evaluator = IBSProperAUCEvaluator(
+            checkpoint_path=args.checkpoint,
+            data_root=args.data_root,
+            arch=args.arch,
+            split=args.split,
+            device_preference=args.device,
+            layer_mode="last",
+            enhanced_cam_method="GradCAMEnhanced",
+            extractor_cls=EnhancedExtractorV2,
+            extractor_kwargs={**extractor_kwargs_base, "aggregation_config": {"type": "standard"}},
+        )
+
+    if run_layercam:
+        res = evaluator.evaluate_method(
+            cam_method_name="LayerCAM",
+            max_images=args.max_images,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+        )
+        all_results.append({
+            "Method": "LayerCAM",
+            "Insertion_Mean": res["insertion_auc_mean"],
+            "Insertion_Std": res["insertion_auc_std"],
+            "Deletion_Mean": res["deletion_auc_mean"],
+            "Deletion_Std": res["deletion_auc_std"],
+            "ROAD_Mean": res["road_mean"],
+            "ROAD_Std": res["road_std"],
+            "Images_Evaluated": res["num_images"],
+        })
+        print(f"LayerCAM: Ins={res['insertion_auc_mean']:.4f} Del={res['deletion_auc_mean']:.4f} ROAD={res['road_mean']:.4f}")
+
+    if run_layercam_fused:
+        fuse_stages = None
+        if args.fuse_stages:
+            fuse_stages = [int(s) for s in args.fuse_stages.split(",")]
+
+        stage_layers = get_layercam_stage_layers(evaluator.model, args.arch)
+        print(f"\nLayerCAM-Fused: {len(stage_layers)} stages, gamma={args.gamma}, "
+              f"fuse_stages={fuse_stages or 'default'}")
+
+        image_paths, predicted_labels, class_names = evaluator.get_imagenet_images(
+            max_images=args.max_images,
+        )
+
+        dataset = _ImageNetDataset(image_paths, predicted_labels, class_names, evaluator.transform)
+        from torch.utils.data import DataLoader
+        loader = DataLoader(
+            dataset, batch_size=1, num_workers=args.num_workers,
+            pin_memory=(evaluator.device.type == "cuda"), shuffle=False,
+        )
+
+        insertion_aucs, deletion_aucs, road_scores = [], [], []
+        start_time = time.time()
+        pbar = tqdm(loader, desc="LayerCAM-Fused", total=len(dataset))
+        for i, (image_tensor, predicted_label, class_name, image_path_batch) in enumerate(pbar):
+            try:
+                image_tensor = image_tensor.squeeze(0)
+                pred_lbl = predicted_label.item()
+
+                saliency_map = extract_layercam_fused(
+                    model=evaluator.model,
+                    stage_layers=stage_layers,
+                    input_tensor=image_tensor.unsqueeze(0),
+                    predicted_label=pred_lbl,
+                    gamma=args.gamma,
+                    fuse_stages=fuse_stages,
+                )
+
+                metrics = evaluator._evaluate_saliency_map(
+                    image_tensor, saliency_map, pred_lbl,
+                    step_size=args.step_size, verbose=False, batch_size=args.batch_size,
+                )
+                insertion_aucs.append(metrics["insertion_auc"])
+                deletion_aucs.append(metrics["deletion_auc"])
+                road_scores.append(np.mean([v for k, v in metrics.items() if k.startswith("road_")]))
+
+                pbar.set_postfix({
+                    "Ins": f"{np.mean(insertion_aucs):.3f}",
+                    "Del": f"{np.mean(deletion_aucs):.3f}",
+                    "ROAD": f"{np.mean(road_scores):.3f}",
+                })
+            except Exception as e:
+                print(f"Error processing image {i}: {e}")
+                continue
+
+        res_fused = {
+            "insertion_auc_mean": np.mean(insertion_aucs),
+            "insertion_auc_std": np.std(insertion_aucs),
+            "deletion_auc_mean": np.mean(deletion_aucs),
+            "deletion_auc_std": np.std(deletion_aucs),
+            "road_mean": np.mean(road_scores),
+            "road_std": np.std(road_scores),
+            "num_images": len(insertion_aucs),
+        }
+        all_results.append({
+            "Method": "LayerCAM-Fused",
+            "Insertion_Mean": res_fused["insertion_auc_mean"],
+            "Insertion_Std": res_fused["insertion_auc_std"],
+            "Deletion_Mean": res_fused["deletion_auc_mean"],
+            "Deletion_Std": res_fused["deletion_auc_std"],
+            "ROAD_Mean": res_fused["road_mean"],
+            "ROAD_Std": res_fused["road_std"],
+            "Images_Evaluated": res_fused["num_images"],
+        })
+        print(f"LayerCAM-Fused: Ins={res_fused['insertion_auc_mean']:.4f} "
+              f"Del={res_fused['deletion_auc_mean']:.4f} ROAD={res_fused['road_mean']:.4f}")
 
     df = pd.DataFrame(all_results)
     out_path = os.path.join(args.output_dir, "comparison_report.csv")
