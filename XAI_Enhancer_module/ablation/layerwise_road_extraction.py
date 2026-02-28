@@ -295,7 +295,21 @@ def main():
 
     data_roots = {"kvasir": args.kvasir_data_root, "ibs": args.ibs_data_root}
 
-    rows: list[dict] = []
+    output_path = Path(args.output_csv)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Resume from a partial CSV if one already exists (crash recovery)
+    if output_path.exists():
+        existing_df = pd.read_csv(output_path)
+        rows: list[dict] = existing_df.to_dict("records")
+        done = {(r["Dataset"], r["Model"]) for r in rows}
+        print(f"Resuming: loaded {len(rows)} existing rows from {output_path}")
+    else:
+        rows = []
+        done = set()
+
+    def _save():
+        pd.DataFrame(rows).to_csv(output_path, index=False)
 
     for ds in DATASETS:
         print(f"\n{'='*60}")
@@ -308,6 +322,10 @@ def main():
             key = (ds, arch)
             if key not in ckpt_map:
                 print(f"  [SKIP] No checkpoint provided for {ds}/{arch}")
+                continue
+
+            if (ds, arch) in done:
+                print(f"  [CACHED] {ds}/{arch} already in CSV, skipping")
                 continue
 
             print(f"\n  Model: {arch}")
@@ -333,15 +351,16 @@ def main():
                     "ROAD_Score": round(road_mean, 6),
                 })
 
-            # Free GPU memory before loading next model
+            # Flush to disk after every model so progress survives crashes
+            _save()
+            print(f"    [SAVED] incremental results to {output_path}")
+
             del model
             torch.cuda.empty_cache() if device.type == "cuda" else None
 
-    # Export CSV
+    # Final save
+    _save()
     df = pd.DataFrame(rows)
-    output_path = Path(args.output_csv)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(output_path, index=False)
     print(f"\nResults saved to {output_path}")
     print(df.to_string(index=False))
 
