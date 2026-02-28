@@ -182,6 +182,7 @@ def build_dataloader(
     dataset: str,
     data_root: str,
     max_images: int,
+    device: torch.device,
     batch_size: int = 1,
     num_workers: int = 4,
 ) -> DataLoader:
@@ -207,7 +208,7 @@ def build_dataloader(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=(str(device) == "cuda"),
+        pin_memory=(device.type == "cuda"),
     )
 
 
@@ -301,7 +302,7 @@ def main():
         print(f"Dataset: {ds.upper()}")
         print(f"{'='*60}")
 
-        loader = build_dataloader(ds, data_roots[ds], args.max_images)
+        loader = build_dataloader(ds, data_roots[ds], args.max_images, device)
 
         for arch in MODELS:
             key = (ds, arch)
