@@ -43,10 +43,15 @@ XAI_Enhancer_module/ablation/
 ├── plot_layerwise_results.py            # Step 2 – publication figures
 ├── bottleneck_visualization.py          # Step 3 – side-by-side heatmaps
 │
-│   Part II – Enhancer Weight Analysis
+│   Part II – Enhancer Weight Analysis (softmax only)
 ├── enhancer_weight_extraction.py        # Step 4 – weight extraction pipeline
 ├── plot_enhancer_weights.py             # Step 5 – adaptive-shift bar charts
-└── weight_road_correlation.py           # Step 6 – Spearman correlation proof
+├── weight_road_correlation.py           # Step 6 – Spearman correlation proof
+│
+│   Part III – Raw vs Softmax Analysis
+├── raw_softmax_extraction.py            # Step 7 – raw + softmax extraction
+├── plot_raw_scores.py                   # Step 8 – bottleneck & diffusion plots
+└── regularization_proof.py              # Step 9 – variance reduction table
 ```
 
 ## Before you start
@@ -319,6 +324,87 @@ img = transform(Image.open("my_image.jpg").convert("RGB")).to(device)
 weights = get_enhancer_weights(img, model, layers, device, predicted_label=3)
 print(weights)  # array of 5 floats summing to ~1.0
 ```
+
+---
+
+# Part III -- Raw vs Softmax Analysis
+
+These scripts extract **both** the pre-softmax raw cosine similarities
+(alpha\_l) and the post-softmax weights, enabling analysis of the
+softmax regularisation effect and architectural bottleneck behaviour.
+
+## Step 7 -- Extract raw + softmax scores
+
+Runs across all 5 architectures and both datasets.  Each image
+produces **two** rows in the CSV (one Raw, one Softmax).
+
+```bash
+python -m XAI_Enhancer_module.ablation.raw_softmax_extraction \
+    --kvasir-data-root data/kvasir-v2 \
+    --ibs-data-root data/IBS-preprocessed-dataset \
+    --checkpoints \
+        kvasir:vgg16:./kvasir_runs/vgg16/best.pth \
+        kvasir:vgg19:./kvasir_runs/vgg19/best.pth \
+        kvasir:resnet18:./kvasir_runs/resnet18/best.pth \
+        kvasir:resnet34:./kvasir_runs/resnet34/best.pth \
+        kvasir:resnet50:./kvasir_runs/resnet50/best.pth \
+        ibs:vgg16:./ibs_runs/vgg16/best.pth \
+        ibs:vgg19:./ibs_runs/vgg19/best.pth \
+        ibs:resnet18:./ibs_runs/resnet18/best.pth \
+        ibs:resnet34:./ibs_runs/resnet34/best.pth \
+        ibs:resnet50:./ibs_runs/resnet50/best.pth \
+    --output-csv runs/ablation/raw_softmax_scores.csv \
+    --device cuda
+```
+
+### Output CSV
+
+| Dataset | Model | Metric_Type | Layer_5_Val | Layer_4_Val | Layer_3_Val | Layer_2_Val | Layer_1_Val |
+|---|---|---|---|---|---|---|---|
+| kvasir | resnet50 | Raw | 0.9821 | 0.9734 | 0.9905 | 0.9887 | 0.9853 |
+| kvasir | resnet50 | Softmax | 0.1921 | 0.1834 | 0.2105 | 0.2087 | 0.2053 |
+
+The script supports crash recovery: it reads any existing CSV on
+restart and skips already-completed (dataset, model) pairs.
+
+## Step 8 -- Bottleneck and diffusion plots
+
+```bash
+python -m XAI_Enhancer_module.ablation.plot_raw_scores \
+    --input-csv runs/ablation/raw_softmax_scores.csv \
+    --output-dir runs/ablation/figures
+```
+
+Creates four files:
+
+| File | Description |
+|---|---|
+| `raw_plot_a_bottleneck_proof.png/pdf` | ResNet-18 vs -34 vs -50 raw scores on IBS (with error bands) |
+| `raw_plot_b_information_diffusion.png/pdf` | VGG-16 vs ResNet-50 raw scores on Kvasir-v2 (with error bands) |
+
+Plot A demonstrates how deeper ResNet variants exhibit different
+raw similarity profiles across layers (the bottleneck effect).
+Plot B contrasts the flat VGG profile against the structured ResNet
+profile (information diffusion patterns).
+
+## Step 9 -- Regularisation proof (variance table)
+
+```bash
+python -m XAI_Enhancer_module.ablation.regularization_proof \
+    --input-csv runs/ablation/raw_softmax_scores.csv \
+    --output-txt runs/ablation/regularization_table.md
+```
+
+Prints a Markdown table to the console (and optionally saves it):
+
+| Model | Raw Avg Std | Softmax Avg Std | Reduction (%) | Raw Median Std | Softmax Median Std |
+|---|---|---|---|---|---|
+| VGG-16 | 0.0123 | 0.0045 | 63.41 | 0.0118 | 0.0042 |
+| ResNet-50 | 0.0098 | 0.0031 | 68.37 | 0.0091 | 0.0028 |
+
+The **Reduction (%)** column quantifies how much the softmax
+operation compresses the layer-wise variance, proving its
+regularising effect on the weight distribution.
 
 ---
 

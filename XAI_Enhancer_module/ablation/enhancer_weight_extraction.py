@@ -157,6 +157,66 @@ def get_enhancer_weights(
     return weights
 
 
+def get_enhancer_raw_and_softmax(
+    image_tensor: torch.Tensor,
+    model: nn.Module,
+    target_layers: list[nn.Module],
+    device: torch.device,
+    predicted_label: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return *both* the pre-softmax raw cosine similarities (alpha_l)
+    and the post-softmax weights for *target_layers*.
+
+    The pipeline is identical to :func:`get_enhancer_weights` but exposes
+    the intermediate raw scores as well.
+
+    Returns:
+        ``(raw_scores, softmax_weights)`` -- two 1-D numpy arrays of
+        length N.  ``raw_scores`` are the per-layer cosine similarities
+        in [-1, 1]; ``softmax_weights`` sum to ~1.
+    """
+    img_batch = image_tensor.unsqueeze(0).to(device)
+    targets = [ClassifierOutputTarget(predicted_label)]
+
+    cam_method = HiResCAMEnhanced(model, target_layers)
+    cam_per_layer, mod_act_per_layer = cam_method(img_batch, targets)
+
+    model.eval()
+    with torch.no_grad():
+        actual_output = model(img_batch)
+
+    similarities: list[float] = []
+    for layer_idx, mod_act in enumerate(mod_act_per_layer):
+        mod_tensor = (torch.from_numpy(mod_act).to(device)
+                      if isinstance(mod_act, np.ndarray)
+                      else mod_act.to(device))
+        layer = target_layers[layer_idx]
+
+        def _hook(module, inp, out, replacement=mod_tensor):
+            return replacement
+
+        handle = layer.register_forward_hook(_hook)
+        try:
+            with torch.no_grad():
+                modified_output = model(img_batch)
+        finally:
+            handle.remove()
+
+        cos = F.cosine_similarity(actual_output, modified_output, dim=1)
+        similarities.append(cos.item())
+
+    try:
+        cam_method.activations_and_grads.release()
+    except Exception:
+        pass
+
+    raw_scores = np.array(similarities, dtype=np.float64)
+    softmax_weights = F.softmax(
+        torch.tensor(similarities, dtype=torch.float32), dim=0,
+    ).numpy()
+    return raw_scores, softmax_weights
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
