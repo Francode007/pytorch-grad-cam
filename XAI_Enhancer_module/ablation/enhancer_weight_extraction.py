@@ -124,12 +124,8 @@ def get_enhancer_weights(
 
     # --- Step 3 + 4: modified outputs & cosine similarities ---
     similarities = []
-    for mod_act in mod_act_per_layer:
+    for layer_idx, mod_act in enumerate(mod_act_per_layer):
         mod_tensor = torch.from_numpy(mod_act).to(device) if isinstance(mod_act, np.ndarray) else mod_act.to(device)
-
-        # Find which target layer this activation belongs to by shape
-        # We need to inject it via a forward hook, then run the model.
-        layer_idx = mod_act_per_layer.index(mod_act)
         layer = target_layers[layer_idx]
 
         hook_replacement = mod_tensor
