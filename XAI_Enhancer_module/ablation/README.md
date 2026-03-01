@@ -1,18 +1,27 @@
 # Layer-wise Ablation Study Module
 
-This module contains three scripts for running a layer-wise ROAD ablation
-study across five architectures (VGG-16, VGG-19, ResNet-18, ResNet-34,
-ResNet-50) on the Kvasir-v2 and IBS datasets.
+This module provides two experiment suites for the XAI-Enhancer research:
+
+**Part I -- ROAD Ablation Study:** Layer-wise ROAD metric extraction
+across five architectures (VGG-16, VGG-19, ResNet-18, ResNet-34,
+ResNet-50) on Kvasir-v2 and IBS, with publication figures and a
+bottleneck heatmap comparison.
+
+**Part II -- Enhancer Weight Analysis:** Extraction and visualisation of
+the logit-similarity weights that the XAI-Enhancer assigns to each
+layer, plus a Spearman correlation proof linking those weights to ROAD
+scores.
 
 ## Prerequisites
 
 | Requirement | Purpose |
 |---|---|
-| Python 3.10+ | `list[...]` type hints used throughout |
+| Python 3.9+ | `list[...]` type hints (PEP 585) |
 | PyTorch with CUDA | GPU-accelerated inference |
 | pytorch-grad-cam | GradCAM saliency extraction (already in this repo) |
 | pandas, numpy | Data wrangling and CSV export |
 | matplotlib, seaborn | Publication-quality plots |
+| scipy | Spearman correlation (weight analysis) |
 | tqdm | Progress bars |
 
 All dependencies are already satisfied by the project's existing
@@ -27,10 +36,17 @@ python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_
 ```
 XAI_Enhancer_module/ablation/
 ├── __init__.py
-├── README.md                          # this file
-├── layerwise_road_extraction.py       # Task 1 – ROAD metric extraction
-├── plot_layerwise_results.py          # Task 2 – publication figures
-└── bottleneck_visualization.py        # Task 3 – side-by-side heatmaps
+├── README.md                            # this file
+│
+│   Part I – ROAD Ablation Study
+├── layerwise_road_extraction.py         # Step 1 – ROAD metric extraction
+├── plot_layerwise_results.py            # Step 2 – publication figures
+├── bottleneck_visualization.py          # Step 3 – side-by-side heatmaps
+│
+│   Part II – Enhancer Weight Analysis
+├── enhancer_weight_extraction.py        # Step 4 – weight extraction pipeline
+├── plot_enhancer_weights.py             # Step 5 – adaptive-shift bar charts
+└── weight_road_correlation.py           # Step 6 – Spearman correlation proof
 ```
 
 ## Before you start
@@ -183,6 +199,129 @@ fig = visualize_bottleneck(
 )
 ```
 
+---
+
+# Part II -- Enhancer Weight Analysis
+
+These scripts analyse the logit-similarity weights that the
+XAI-Enhancer module assigns to each of the last 5 Conv2d layers.
+The weights are derived by running **HiResCAMEnhanced**, injecting
+per-layer masked activations, computing cosine similarity between
+original and modified logits, and applying softmax.
+
+## Step 4 -- Extract Enhancer weights
+
+### Minimal example
+
+```bash
+python -m XAI_Enhancer_module.ablation.enhancer_weight_extraction \
+    --kvasir-data-root data/kvasir-v2 \
+    --ibs-data-root data/IBS-preprocessed-dataset \
+    --checkpoints kvasir:resnet50:./kvasir_runs/resnet50/best.pth \
+    --output-csv runs/ablation/enhancer_weights.csv \
+    --max-images 50 \
+    --device cuda
+```
+
+### Full run (VGG-16 + ResNet-50, both datasets)
+
+```bash
+python -m XAI_Enhancer_module.ablation.enhancer_weight_extraction \
+    --kvasir-data-root data/kvasir-v2 \
+    --ibs-data-root data/IBS-preprocessed-dataset \
+    --checkpoints \
+        kvasir:vgg16:./kvasir_runs/vgg16/best.pth \
+        kvasir:resnet50:./kvasir_runs/resnet50/best.pth \
+        ibs:vgg16:./ibs_runs/vgg16/best.pth \
+        ibs:resnet50:./ibs_runs/resnet50/best.pth \
+    --output-csv runs/ablation/enhancer_weights.csv \
+    --device cuda
+```
+
+### Output
+
+A per-image CSV with columns:
+
+| Dataset | Model | Layer_5_Weight | Layer_4_Weight | Layer_3_Weight | Layer_2_Weight | Layer_1_Weight |
+|---|---|---|---|---|---|---|
+| kvasir | resnet50 | 0.1821 | 0.2034 | 0.2105 | 0.1987 | 0.2053 |
+| ... | ... | ... | ... | ... | ... | ... |
+
+`Layer_5_Weight` corresponds to Conv2d index -5 (deepest of the five),
+`Layer_1_Weight` to index -1 (shallowest / last).
+
+## Step 5 -- Adaptive-shift visualisation
+
+```bash
+python -m XAI_Enhancer_module.ablation.plot_enhancer_weights \
+    --input-csv runs/ablation/enhancer_weights.csv \
+    --output-dir runs/ablation/figures
+```
+
+This creates four files:
+
+| File | Description |
+|---|---|
+| `weight_plot_a_cross_dataset.png` | ResNet-50 weights: IBS vs Kvasir-v2 |
+| `weight_plot_a_cross_dataset.pdf` | Same, vector format |
+| `weight_plot_b_cross_architecture.png` | VGG-16 vs ResNet-50 on Kvasir-v2 |
+| `weight_plot_b_cross_architecture.pdf` | Same, vector format |
+
+Both plots are grouped bar charts with error bars (std) showing how
+the Enhancer re-distributes attention across layers depending on the
+dataset or architecture.
+
+## Step 6 -- ROAD-weight Spearman correlation
+
+This script proves that the Enhancer weights are correlated with
+the actual faithfulness (ROAD) of each layer's explanation.
+
+```bash
+python -m XAI_Enhancer_module.ablation.weight_road_correlation \
+    --kvasir-data-root data/kvasir-v2 \
+    --checkpoint ./kvasir_runs/resnet50/best.pth \
+    --num-images 100 \
+    --output-csv runs/ablation/weight_road_corr.csv \
+    --device cuda
+```
+
+For each of the 100 randomly sampled images (seed=42), the script:
+1. Computes standalone ROAD scores for layers -5 through -1.
+2. Extracts the Enhancer weights for those same layers.
+3. Computes Spearman rank correlation between the two 5-element arrays.
+
+Output is printed to the console and saved to a per-image CSV:
+
+| image | label | spearman_rho | p_value | road_5 | ... | weight_1 |
+|---|---|---|---|---|---|---|
+
+The final line reports the **average Spearman rho** across all valid
+samples.
+
+### Programmatic usage
+
+```python
+from XAI_Enhancer_module.ablation.enhancer_weight_extraction import get_enhancer_weights
+from XAI_Enhancer_module.kvasir.models import build_kvasir_model, load_kvasir_checkpoint
+from XAI_Enhancer_module.kvasir.data import get_val_transforms, KVASIR_NUM_CLASSES
+from PIL import Image
+import torch, torch.nn as nn
+
+device = torch.device("cuda")
+model = build_kvasir_model("resnet50", num_classes=KVASIR_NUM_CLASSES, pretrained=False)
+load_kvasir_checkpoint(model, "kvasir_runs/resnet50/best.pth", device)
+model.to(device).eval()
+
+layers = [m for m in model.modules() if isinstance(m, nn.Conv2d)][-5:]
+transform = get_val_transforms()
+img = transform(Image.open("my_image.jpg").convert("RGB")).to(device)
+
+weights = get_enhancer_weights(img, model, layers, device, predicted_label=3)
+print(weights)  # array of 5 floats summing to ~1.0
+```
+
+---
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -192,3 +331,4 @@ fig = visualize_bottleneck(
 | `No checkpoint provided for ...` | Add the missing `dataset:arch:path` to `--checkpoints` |
 | Plot script says "No Kvasir data" | Ensure the CSV has rows where `Dataset == "kvasir"` |
 | `ModuleNotFoundError` | Run from the project root so `sys.path` resolves correctly |
+| `No module named 'scipy'` | `pip install scipy` in your environment |
