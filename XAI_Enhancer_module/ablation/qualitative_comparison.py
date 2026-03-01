@@ -9,8 +9,8 @@ methods on one IBS image (Row 1) and one Kvasir-v2 image (Row 2):
 
 Usage:
     python -m XAI_Enhancer_module.ablation.qualitative_comparison \
-        --img-ibs  data/IBS-preprocessed-dataset/class_0/img001.jpg \
-        --img-kvasir data/kvasir-v2/polyps/cju0s4xjy001c0835yioh0bkx.jpg \
+        --img-ibs  data/IBS-preprocessed-dataset/IBS/0.jpg \
+        --img-kvasir data/kvasir-v2/polyps/polyps/00072d5f-7cd8-434c-8a5a-1a0bb2c9711d.jpg \
         --ckpt-ibs  ./ibs_runs/resnet50/best.pth \
         --ckpt-kvasir ./kvasir_runs/resnet50/best.pth \
         --output qualitative_comparison.pdf \
