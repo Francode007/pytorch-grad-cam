@@ -2,13 +2,15 @@
 """
 Regularisation Proof: softmax reduces layer-wise variance.
 
-Reads the CSV produced by ``raw_softmax_extraction.py`` and, for every
-image, computes the standard deviation across the 5 layer values.
-Results are grouped by (Model, Metric_Type) to show that the Softmax
-operation consistently compresses the layer-wise spread compared to
-the Raw cosine similarities.
+Reads the long-format CSV produced by ``raw_softmax_extraction.py``
+(columns: Dataset, Model, Image_ID, Layer_Index, Raw_Similarity,
+Softmax_Weight) and, for every (Image_ID, Model) group, computes the
+standard deviation of Raw_Similarity and Softmax_Weight across ALL
+layers.
 
-Prints a Markdown table and optionally saves to a text file.
+Averages are then grouped by Model and printed as a Markdown table
+that quantifies how much the softmax operation reduces the layer-wise
+spread.
 
 Usage:
     python -m XAI_Enhancer_module.ablation.regularization_proof \
@@ -22,14 +24,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-_LAYER_COLS = [
-    "Layer_5_Val",
-    "Layer_4_Val",
-    "Layer_3_Val",
-    "Layer_2_Val",
-    "Layer_1_Val",
-]
-
 _MODEL_DISPLAY = {
     "vgg16": "VGG-16",
     "vgg19": "VGG-19",
@@ -40,33 +34,44 @@ _MODEL_DISPLAY = {
 
 
 def build_table(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute per-image layer std, then average by (Model, Metric_Type)."""
-    df = df.copy()
-    df["Layer_Std"] = df[_LAYER_COLS].std(axis=1)
-
-    summary = (
-        df.groupby(["Model", "Metric_Type"])["Layer_Std"]
-        .agg(Avg_Std="mean", Median_Std="median", Max_Std="max")
+    """Compute per-image layer std for both metrics, then average by Model."""
+    per_image = (
+        df.groupby(["Dataset", "Model", "Image_ID"])
+        .agg(
+            Raw_Std=("Raw_Similarity", "std"),
+            Softmax_Std=("Softmax_Weight", "std"),
+            Num_Layers=("Layer_Index", "count"),
+        )
         .reset_index()
     )
 
-    # Pivot so Raw and Softmax sit side by side per model
-    raw = summary[summary["Metric_Type"] == "Raw"].set_index("Model")
-    soft = summary[summary["Metric_Type"] == "Softmax"].set_index("Model")
+    summary = (
+        per_image.groupby("Model")
+        .agg(
+            Avg_Raw_Std=("Raw_Std", "mean"),
+            Median_Raw_Std=("Raw_Std", "median"),
+            Avg_Softmax_Std=("Softmax_Std", "mean"),
+            Median_Softmax_Std=("Softmax_Std", "median"),
+            Avg_Num_Layers=("Num_Layers", "mean"),
+        )
+        .reset_index()
+    )
 
     result_rows = []
-    for model in raw.index.intersection(soft.index):
-        r_avg = raw.loc[model, "Avg_Std"]
-        s_avg = soft.loc[model, "Avg_Std"]
-        reduction_pct = ((r_avg - s_avg) / r_avg * 100) if r_avg > 1e-9 else 0.0
+    for _, row in summary.iterrows():
+        model = row["Model"]
+        r_avg = row["Avg_Raw_Std"]
+        s_avg = row["Avg_Softmax_Std"]
+        reduction = ((r_avg - s_avg) / r_avg * 100) if r_avg > 1e-9 else 0.0
 
         result_rows.append({
             "Model": _MODEL_DISPLAY.get(model, model),
+            "Layers": int(round(row["Avg_Num_Layers"])),
             "Raw Avg Std": round(r_avg, 6),
             "Softmax Avg Std": round(s_avg, 6),
-            "Reduction (%)": round(reduction_pct, 2),
-            "Raw Median Std": round(raw.loc[model, "Median_Std"], 6),
-            "Softmax Median Std": round(soft.loc[model, "Median_Std"], 6),
+            "Reduction (%)": round(reduction, 2),
+            "Raw Median Std": round(row["Median_Raw_Std"], 6),
+            "Softmax Median Std": round(row["Median_Softmax_Std"], 6),
         })
 
     return pd.DataFrame(result_rows)
@@ -74,10 +79,11 @@ def build_table(df: pd.DataFrame) -> pd.DataFrame:
 
 def to_markdown(table: pd.DataFrame) -> str:
     """Render the summary DataFrame as a Markdown table."""
-    lines = []
     cols = list(table.columns)
-    lines.append("| " + " | ".join(cols) + " |")
-    lines.append("| " + " | ".join(["---"] * len(cols)) + " |")
+    lines = [
+        "| " + " | ".join(cols) + " |",
+        "| " + " | ".join(["---"] * len(cols)) + " |",
+    ]
     for _, row in table.iterrows():
         lines.append("| " + " | ".join(str(row[c]) for c in cols) + " |")
     return "\n".join(lines)
@@ -93,7 +99,7 @@ def parse_args():
     )
     p.add_argument("--input-csv", default="runs/ablation/raw_softmax_scores.csv")
     p.add_argument("--output-txt", default=None,
-                    help="Optional path to save the Markdown table.")
+                   help="Optional path to save the Markdown table.")
     return p.parse_args()
 
 
@@ -116,7 +122,8 @@ def main():
         out = Path(args.output_txt)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(
-            "## Regularisation Proof: Raw vs Softmax Layer-wise Variance\n\n" + md + "\n"
+            "## Regularisation Proof: Raw vs Softmax Layer-wise Variance\n\n"
+            + md + "\n"
         )
         print(f"\nTable saved to {out}")
 

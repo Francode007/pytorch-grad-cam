@@ -2,13 +2,13 @@
 """
 Architectural Bottleneck Visualisation for raw logit-similarity scores.
 
-Reads the CSV produced by ``raw_softmax_extraction.py`` (Metric_Type == 'Raw')
-and generates two publication-quality line plots:
+Reads the long-format CSV produced by ``raw_softmax_extraction.py`` and
+generates two publication-quality line plots using normalised network
+depth on the X-axis (0.0 = first Conv2d, 1.0 = last Conv2d) so that
+models with different total layer counts can be compared side-by-side.
 
-* **Plot A (Bottleneck Proof):** Average raw scores of ResNet-18,
-  ResNet-34, and ResNet-50 on the IBS dataset.
-* **Plot B (Information Diffusion):** Average raw scores of VGG-16
-  vs ResNet-50 on the Kvasir-v2 dataset.
+* **Plot A (Bottleneck Proof):** ResNet-18, ResNet-34, ResNet-50 on IBS.
+* **Plot B (Information Diffusion):** VGG-16 vs ResNet-50 on Kvasir-v2.
 
 Usage:
     python -m XAI_Enhancer_module.ablation.plot_raw_scores \
@@ -24,15 +24,6 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-_LAYER_COLS = [
-    "Layer_5_Val",
-    "Layer_4_Val",
-    "Layer_3_Val",
-    "Layer_2_Val",
-    "Layer_1_Val",
-]
-_LAYER_LABELS = ["-5", "-4", "-3", "-2", "-1"]
-
 _MODEL_DISPLAY = {
     "vgg16": "VGG-16",
     "vgg19": "VGG-19",
@@ -40,9 +31,11 @@ _MODEL_DISPLAY = {
     "resnet34": "ResNet-34",
     "resnet50": "ResNet-50",
 }
-_DATASET_DISPLAY = {"kvasir": "Kvasir-v2", "ibs": "IBS"}
 
 _MARKERS = ["o", "s", "D", "^", "v"]
+
+# Number of bins to discretise normalised depth for aggregation
+_N_BINS = 20
 
 
 def _apply_theme():
@@ -54,23 +47,25 @@ def _apply_theme():
             "axes.linewidth": 1.0,
             "grid.linewidth": 0.6,
             "lines.linewidth": 2.0,
-            "lines.markersize": 8,
+            "lines.markersize": 6,
             "font.family": "serif",
         },
     )
 
 
-def _raw_subset(df: pd.DataFrame) -> pd.DataFrame:
-    return df[df["Metric_Type"] == "Raw"].copy()
+def _add_normalised_depth(df: pd.DataFrame) -> pd.DataFrame:
+    """Add a ``Depth`` column in [0, 1] normalised per (Dataset, Model, Image_ID)."""
+    df = df.copy()
+    max_idx = df.groupby(["Dataset", "Model"])["Layer_Index"].transform("max")
+    df["Depth"] = df["Layer_Index"] / max_idx.clip(lower=1)
+    return df
 
 
-def _melt_to_long(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert wide layer columns to long format."""
-    id_vars = [c for c in df.columns if c not in _LAYER_COLS]
-    long = df.melt(id_vars=id_vars, value_vars=_LAYER_COLS,
-                   var_name="Layer", value_name="Score")
-    long["Layer"] = long["Layer"].map(dict(zip(_LAYER_COLS, _LAYER_LABELS)))
-    return long
+def _bin_depth(df: pd.DataFrame, n_bins: int = _N_BINS) -> pd.DataFrame:
+    """Discretise continuous Depth into fixed bins so models align on the same grid."""
+    df = df.copy()
+    df["Depth_Bin"] = (df["Depth"] * n_bins).round() / n_bins
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -78,40 +73,39 @@ def _melt_to_long(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def plot_bottleneck_proof(df: pd.DataFrame, output_dir: Path):
-    raw = _raw_subset(df)
-    subset = raw[
-        (raw["Dataset"].str.lower() == "ibs")
-        & (raw["Model"].isin(["resnet18", "resnet34", "resnet50"]))
+    subset = df[
+        (df["Dataset"].str.lower() == "ibs")
+        & (df["Model"].isin(["resnet18", "resnet34", "resnet50"]))
     ]
     if subset.empty:
-        print("WARNING: No IBS ResNet data found; skipping Plot A.")
+        print("  WARNING: No IBS ResNet data found; skipping Plot A.")
         return
 
-    long = _melt_to_long(subset)
-    agg = long.groupby(["Model", "Layer"])["Score"].agg(["mean", "std"]).reset_index()
+    subset = _add_normalised_depth(subset)
+    subset = _bin_depth(subset)
 
-    fig, ax = plt.subplots(figsize=(7, 4.5))
+    agg = (
+        subset.groupby(["Model", "Depth_Bin"])["Raw_Similarity"]
+        .agg(["mean", "std"]).reset_index()
+    )
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
     palette = sns.color_palette("deep", n_colors=3)
     model_order = ["resnet18", "resnet34", "resnet50"]
 
     for i, model in enumerate(model_order):
-        sub = agg[agg["Model"] == model].set_index("Layer").loc[_LAYER_LABELS]
-        ax.plot(
-            _LAYER_LABELS, sub["mean"],
-            label=_MODEL_DISPLAY[model],
-            marker=_MARKERS[i],
-            color=palette[i],
-        )
-        ax.fill_between(
-            _LAYER_LABELS,
-            sub["mean"] - sub["std"],
-            sub["mean"] + sub["std"],
-            alpha=0.15, color=palette[i],
-        )
+        sub = agg[agg["Model"] == model].sort_values("Depth_Bin")
+        x = sub["Depth_Bin"].values
+        y = sub["mean"].values
+        err = sub["std"].values
+        ax.plot(x, y, label=_MODEL_DISPLAY[model],
+                marker=_MARKERS[i], color=palette[i], markevery=2)
+        ax.fill_between(x, y - err, y + err, alpha=0.12, color=palette[i])
 
-    ax.set_xlabel("Layer Index (from end)")
+    ax.set_xlabel("Normalised Network Depth (0 = first Conv, 1 = last Conv)")
     ax.set_ylabel(r"Raw Cosine Similarity ($\alpha_l$)")
     ax.set_title("Architectural Bottleneck \u2014 ResNets on IBS")
+    ax.set_xlim(-0.02, 1.02)
     ax.legend(frameon=True, fancybox=False, edgecolor="0.7")
     fig.tight_layout()
 
@@ -127,40 +121,39 @@ def plot_bottleneck_proof(df: pd.DataFrame, output_dir: Path):
 # ---------------------------------------------------------------------------
 
 def plot_information_diffusion(df: pd.DataFrame, output_dir: Path):
-    raw = _raw_subset(df)
-    subset = raw[
-        (raw["Dataset"].str.lower() == "kvasir")
-        & (raw["Model"].isin(["vgg16", "resnet50"]))
+    subset = df[
+        (df["Dataset"].str.lower() == "kvasir")
+        & (df["Model"].isin(["vgg16", "resnet50"]))
     ]
     if subset.empty:
-        print("WARNING: No Kvasir VGG/ResNet data found; skipping Plot B.")
+        print("  WARNING: No Kvasir VGG/ResNet data found; skipping Plot B.")
         return
 
-    long = _melt_to_long(subset)
-    agg = long.groupby(["Model", "Layer"])["Score"].agg(["mean", "std"]).reset_index()
+    subset = _add_normalised_depth(subset)
+    subset = _bin_depth(subset)
 
-    fig, ax = plt.subplots(figsize=(7, 4.5))
+    agg = (
+        subset.groupby(["Model", "Depth_Bin"])["Raw_Similarity"]
+        .agg(["mean", "std"]).reset_index()
+    )
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
     palette = sns.color_palette("Set2", n_colors=2)
     model_order = ["vgg16", "resnet50"]
 
     for i, model in enumerate(model_order):
-        sub = agg[agg["Model"] == model].set_index("Layer").loc[_LAYER_LABELS]
-        ax.plot(
-            _LAYER_LABELS, sub["mean"],
-            label=_MODEL_DISPLAY[model],
-            marker=_MARKERS[i],
-            color=palette[i],
-        )
-        ax.fill_between(
-            _LAYER_LABELS,
-            sub["mean"] - sub["std"],
-            sub["mean"] + sub["std"],
-            alpha=0.15, color=palette[i],
-        )
+        sub = agg[agg["Model"] == model].sort_values("Depth_Bin")
+        x = sub["Depth_Bin"].values
+        y = sub["mean"].values
+        err = sub["std"].values
+        ax.plot(x, y, label=_MODEL_DISPLAY[model],
+                marker=_MARKERS[i], color=palette[i], markevery=2)
+        ax.fill_between(x, y - err, y + err, alpha=0.12, color=palette[i])
 
-    ax.set_xlabel("Layer Index (from end)")
+    ax.set_xlabel("Normalised Network Depth (0 = first Conv, 1 = last Conv)")
     ax.set_ylabel(r"Raw Cosine Similarity ($\alpha_l$)")
     ax.set_title("Information Diffusion \u2014 VGG-16 vs ResNet-50 (Kvasir-v2)")
+    ax.set_xlim(-0.02, 1.02)
     ax.legend(frameon=True, fancybox=False, edgecolor="0.7")
     fig.tight_layout()
 
@@ -177,7 +170,7 @@ def plot_information_diffusion(df: pd.DataFrame, output_dir: Path):
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Visualise raw logit-similarity scores across layers.",
+        description="Visualise raw logit-similarity scores across all layers.",
     )
     p.add_argument("--input-csv", default="runs/ablation/raw_softmax_scores.csv")
     p.add_argument("--output-dir", default="runs/ablation/figures")

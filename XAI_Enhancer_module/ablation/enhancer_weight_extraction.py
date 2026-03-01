@@ -217,12 +217,86 @@ def get_enhancer_raw_and_softmax(
     return raw_scores, softmax_weights
 
 
+def get_enhancer_raw_and_softmax_all_layers(
+    image_tensor: torch.Tensor,
+    model: nn.Module,
+    target_layers: list[nn.Module],
+    device: torch.device,
+    predicted_label: int,
+) -> list[tuple[int, float, float]]:
+    """Extract raw cosine similarity and softmax weight for *every* layer.
+
+    Identical pipeline to :func:`get_enhancer_raw_and_softmax` but designed
+    for an arbitrary number of target layers (not just the last 5).
+
+    Args:
+        image_tensor: (C, H, W) normalised image tensor.
+        model:        Classification model (eval, on *device*).
+        target_layers: **All** Conv2d modules to evaluate (length N).
+        device:       Torch device.
+        predicted_label: Target class for GradCAM.
+
+    Returns:
+        List of ``(layer_index, raw_similarity, softmax_weight)`` tuples,
+        one per layer.  ``layer_index`` runs from 0 to N-1 (network order).
+        Softmax is computed over all N layers jointly.
+    """
+    img_batch = image_tensor.unsqueeze(0).to(device)
+    targets = [ClassifierOutputTarget(predicted_label)]
+
+    cam_method = HiResCAMEnhanced(model, target_layers)
+    _cam_per_layer, mod_act_per_layer = cam_method(img_batch, targets)
+
+    model.eval()
+    with torch.no_grad():
+        actual_output = model(img_batch)
+
+    similarities: list[float] = []
+    for layer_idx, mod_act in enumerate(mod_act_per_layer):
+        mod_tensor = (torch.from_numpy(mod_act).to(device)
+                      if isinstance(mod_act, np.ndarray)
+                      else mod_act.to(device))
+        layer = target_layers[layer_idx]
+
+        def _hook(module, inp, out, replacement=mod_tensor):
+            return replacement
+
+        handle = layer.register_forward_hook(_hook)
+        try:
+            with torch.no_grad():
+                modified_output = model(img_batch)
+        finally:
+            handle.remove()
+
+        cos = F.cosine_similarity(actual_output, modified_output, dim=1)
+        similarities.append(cos.item())
+
+    try:
+        cam_method.activations_and_grads.release()
+    except Exception:
+        pass
+
+    softmax_weights = F.softmax(
+        torch.tensor(similarities, dtype=torch.float32), dim=0,
+    ).numpy()
+
+    return [
+        (i, similarities[i], float(softmax_weights[i]))
+        for i in range(len(similarities))
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _get_all_conv2d(model: nn.Module) -> list[nn.Module]:
+    """Return *every* Conv2d layer in network order."""
+    return [m for m in model.modules() if isinstance(m, nn.Conv2d)]
+
+
 def _get_last_n_conv2d(model: nn.Module, n: int = NUM_LAYERS) -> list[nn.Module]:
-    all_conv = [m for m in model.modules() if isinstance(m, nn.Conv2d)]
+    all_conv = _get_all_conv2d(model)
     return all_conv[-n:] if len(all_conv) >= n else all_conv
 
 

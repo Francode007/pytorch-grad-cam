@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
-Raw + Softmax Logit-Similarity Extraction.
+Raw + Softmax Logit-Similarity Extraction (all Conv2d layers, long format).
 
-For every validation image, extracts both the pre-softmax raw cosine
-similarities (alpha_l) and the post-softmax Enhancer weights for the
-last 5 Conv2d layers using HiResCAMEnhanced.
+For every validation image, extracts the pre-softmax raw cosine
+similarities (alpha_l) and the post-softmax Enhancer weights for
+**every** Conv2d layer in the network using HiResCAMEnhanced.
 
 Runs across 5 architectures (vgg16, vgg19, resnet18, resnet34, resnet50)
 and 2 datasets (IBS, Kvasir-v2).
 
-Output CSV columns:
-    Dataset, Model, Metric_Type,
-    Layer_5_Val, Layer_4_Val, Layer_3_Val, Layer_2_Val, Layer_1_Val
+Long-format CSV columns:
+    Dataset, Model, Image_ID, Layer_Index, Raw_Similarity, Softmax_Weight
 
 Usage:
     python -m XAI_Enhancer_module.ablation.raw_softmax_extraction \
@@ -27,18 +26,16 @@ import argparse
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from XAI_Enhancer_module.ablation.enhancer_weight_extraction import (
-    get_enhancer_raw_and_softmax,
+    get_enhancer_raw_and_softmax_all_layers,
     _SplitDataset,
-    _get_last_n_conv2d,
+    _get_all_conv2d,
     _load_model,
 )
 from XAI_Enhancer_module.kvasir.data import (
@@ -51,12 +48,11 @@ from XAI_Enhancer_module.ibs.data import (
 )
 from XAI_Enhancer_module.utils.model_utils import get_device
 from torch.utils.data import DataLoader
-from PIL import Image
 
 MODELS = ["vgg16", "vgg19", "resnet18", "resnet34", "resnet50"]
 DATASETS = ["kvasir", "ibs"]
-NUM_LAYERS = 5
-LAYER_COLS = [f"Layer_{NUM_LAYERS - i}_Val" for i in range(NUM_LAYERS)]
+CSV_COLUMNS = ["Dataset", "Model", "Image_ID", "Layer_Index",
+               "Raw_Similarity", "Softmax_Weight"]
 
 
 def _build_dataloader(
@@ -81,7 +77,7 @@ def _build_dataloader(
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Extract raw cosine similarities and softmax weights per layer.",
+        description="Extract raw + softmax scores for ALL Conv2d layers (long format).",
     )
     p.add_argument("--kvasir-data-root", default="data/kvasir-v2")
     p.add_argument("--ibs-data-root", default="data/IBS-preprocessed-dataset")
@@ -109,18 +105,21 @@ def main():
     output_path = Path(args.output_csv)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Resume support
+    # Resume support: reload existing rows and skip completed (dataset, model) pairs
     if output_path.exists():
         existing = pd.read_csv(output_path)
         rows: list[dict] = existing.to_dict("records")
-        done = {(r["Dataset"], r["Model"]) for r in rows}
-        print(f"Resuming: {len(rows)} rows loaded, {len(done)} (dataset,model) pairs done")
+        done = set()
+        for r in rows:
+            done.add((r["Dataset"], r["Model"]))
+        print(f"Resuming: {len(rows)} rows loaded, "
+              f"{len(done)} (dataset,model) pairs done")
     else:
         rows = []
         done = set()
 
     def _save():
-        pd.DataFrame(rows).to_csv(output_path, index=False)
+        pd.DataFrame(rows, columns=CSV_COLUMNS).to_csv(output_path, index=False)
 
     for ds in DATASETS:
         print(f"\n{'='*60}\nDataset: {ds.upper()}\n{'='*60}")
@@ -137,23 +136,29 @@ def main():
 
             print(f"\n  Model: {arch}")
             model = _load_model(ds, arch, ckpt_map[key], device)
-            target_layers = _get_last_n_conv2d(model, NUM_LAYERS)
-            print(f"    Using last {len(target_layers)} Conv2d layers")
+            target_layers = _get_all_conv2d(model)
+            n_layers = len(target_layers)
+            print(f"    All Conv2d layers: {n_layers}")
 
-            for img_tensor, label in tqdm(loader, desc=f"    {ds}/{arch}", leave=False):
+            for img_id, (img_tensor, label) in enumerate(
+                tqdm(loader, desc=f"    {ds}/{arch}", leave=False)
+            ):
                 img_tensor = img_tensor.squeeze(0).to(device)
                 label_int = label.item()
 
-                raw_scores, softmax_weights = get_enhancer_raw_and_softmax(
+                layer_results = get_enhancer_raw_and_softmax_all_layers(
                     img_tensor, model, target_layers, device, label_int,
                 )
 
-                # Two rows per image: one Raw, one Softmax
-                for metric_type, values in [("Raw", raw_scores), ("Softmax", softmax_weights)]:
-                    row = {"Dataset": ds, "Model": arch, "Metric_Type": metric_type}
-                    for i, v in enumerate(values):
-                        row[LAYER_COLS[i]] = round(float(v), 6)
-                    rows.append(row)
+                for layer_idx, raw_sim, softmax_w in layer_results:
+                    rows.append({
+                        "Dataset": ds,
+                        "Model": arch,
+                        "Image_ID": img_id,
+                        "Layer_Index": layer_idx,
+                        "Raw_Similarity": round(raw_sim, 6),
+                        "Softmax_Weight": round(softmax_w, 6),
+                    })
 
             _save()
             print(f"    [SAVED] incremental results to {output_path}")
@@ -163,9 +168,9 @@ def main():
                 torch.cuda.empty_cache()
 
     _save()
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(rows, columns=CSV_COLUMNS)
     print(f"\nSaved {len(df)} rows to {output_path}")
-    print(df.head(10).to_string(index=False))
+    print(df.head(15).to_string(index=False))
 
 
 if __name__ == "__main__":
