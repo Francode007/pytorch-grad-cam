@@ -137,7 +137,7 @@ class GradCAMWrapper:
     def __init__(self, model: nn.Module, target_layer: nn.Module, device: torch.device):
         self.model = model
         self.device = device
-        self.cam = GradCAM(model=self.model, target_layers=[target_layer], use_cuda=device.type == "cuda")
+        self.cam = GradCAM(model=self.model, target_layers=[target_layer])
 
     def generate_map(self, input_tensor: torch.Tensor) -> np.ndarray:
         # input_tensor: [1,C,H,W] already on device

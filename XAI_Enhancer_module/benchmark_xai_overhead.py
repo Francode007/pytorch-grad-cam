@@ -1,12 +1,6 @@
 import csv
 import sys
-from pathlib import Path
 from typing import Callable, Dict, List
-
-# Ensure project root is on path so pytorch_grad_cam and XAI_Enhancer_module import correctly
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 
 import torch
 import torch.nn as nn
@@ -114,8 +108,8 @@ def main() -> None:
     if not torch.cuda.is_available():
         raise SystemExit("CUDA device not available. Please run on a CUDA-enabled GPU.")
 
-    # Use the project's device utility to keep behavior consistent
-    device = get_device("cuda")
+    # Device: use CUDA if available (pytorch-grad-cam uses model's device)
+    device = torch.device(get_device("cuda"))
 
     # Enable cuDNN benchmarking for more stable, optimized timings
     if torch.backends.cudnn.is_available():
@@ -130,19 +124,20 @@ def main() -> None:
     targets = [ClassifierOutputTarget(0)]
 
     # --- Base GradCAM ---
-    gradcam = GradCAM(model=model, target_layers=target_layers["standard"], use_cuda=True)
+    # CAM classes take (model, target_layers, reshape_transform=None); device comes from model
+    gradcam = GradCAM(model=model, target_layers=target_layers["standard"])
 
     def run_gradcam() -> None:
         _ = gradcam(input_tensor=dummy_input, targets=targets)
 
     # --- LayerCAM ---
-    layercam = LayerCAM(model=model, target_layers=target_layers["standard"], use_cuda=True)
+    layercam = LayerCAM(model=model, target_layers=target_layers["standard"])
 
     def run_layercam() -> None:
         _ = layercam(input_tensor=dummy_input, targets=targets)
 
     # --- HiResCAM (HR-CAM) ---
-    hrcam = HiResCAM(model=model, target_layers=target_layers["standard"], use_cuda=True)
+    hrcam = HiResCAM(model=model, target_layers=target_layers["standard"])
 
     def run_hrcam() -> None:
         _ = hrcam(input_tensor=dummy_input, targets=targets)

@@ -200,7 +200,7 @@ def compute_heatmaps(
     Returns heatmaps in [0,1] as torch tensors of shape [B, H, W].
     """
     # Standard Grad-CAM
-    gradcam = GradCAM(model=model, target_layers=target_layers["standard"], use_cuda=device.type == "cuda")
+    gradcam = GradCAM(model=model, target_layers=target_layers["standard"])
     targets = [ClassifierOutputTarget(int(lbl)) for lbl in predicted_labels]
     cams_standard = gradcam(input_tensor=batch_tensor.to(device), targets=targets)  # [B, 1, H, W] or [B, H, W]
     cams_standard_t = torch.from_numpy(cams_standard)
