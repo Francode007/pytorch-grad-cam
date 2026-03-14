@@ -1,7 +1,15 @@
 import os
+import sys
 import csv
+from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
+
+# Project root so "XAI_Enhancer_module" can be imported when run as
+# python XAI_Enhancer_module/clinical_evaluation_proxy.py ...
+_TOP = Path(__file__).resolve().parent.parent
+if _TOP not in [Path(p).resolve() for p in sys.path]:
+    sys.path.append(str(_TOP))
 
 import cv2
 import matplotlib.pyplot as plt
@@ -10,6 +18,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
+from tqdm import tqdm
 
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
@@ -29,33 +38,34 @@ class ClinicalEvalConfig:
     csv_output_path: str = "clinical_eval_results.csv"
     max_visualizations: int = 5
     viz_output_dir: str = "clinical_eval_visualizations"
+    max_images: int = -1  # -1 = use all image/mask pairs
 
 
 class KvasirSegDataset(Dataset):
     """
-    Dataset for Kvasir-SEG style folders.
+    Dataset for Kvasir-SEG: polyp images + expert binary segmentation masks.
 
-    Expected directory structure (typical Kvasir-SEG):
+    Expected directory structure (as in data/Kvasir-SEG):
         root/
           images/
-            xxx.png
+            xxx.jpg  (or .png, etc.)
           masks/
-            xxx.png
+            xxx.jpg  (same filename; or xxx_mask.png, xxx.png)
 
-    The same stem name is used to pair images and masks.
+    Pairs images and masks by filename (with fallbacks for _mask suffix / different extension).
     """
 
-    def __init__(self, root_dir: str, image_size: int = 224):
-        self.root_dir = root_dir
+    def __init__(self, root_dir: str, image_size: int = 224, max_images: int = -1):
+        self.root_dir = Path(root_dir)
         self.image_size = image_size
 
-        images_dir = os.path.join(root_dir, "images")
-        masks_dir = os.path.join(root_dir, "masks")
+        images_dir = self.root_dir / "images"
+        masks_dir = self.root_dir / "masks"
 
-        if not os.path.isdir(images_dir) or not os.path.isdir(masks_dir):
+        if not images_dir.is_dir() or not masks_dir.is_dir():
             raise RuntimeError(
-                f"Kvasir-SEG directory should contain 'images' and 'masks' subfolders. "
-                f"Got: images_dir={images_dir}, masks_dir={masks_dir}"
+                f"Kvasir-SEG directory must contain 'images' and 'masks' subfolders. "
+                f"Got: {images_dir} (exists={images_dir.is_dir()}), {masks_dir} (exists={masks_dir.is_dir()})"
             )
 
         self.image_paths: List[str] = []
@@ -64,28 +74,32 @@ class KvasirSegDataset(Dataset):
         for fname in sorted(os.listdir(images_dir)):
             if not fname.lower().endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp")):
                 continue
-            image_path = os.path.join(images_dir, fname)
-            mask_path = os.path.join(masks_dir, fname)
+            image_path = str(images_dir / fname)
+            mask_path = str(masks_dir / fname)
             if not os.path.exists(mask_path):
-                # Try with common alternative suffixes if needed
                 base, _ = os.path.splitext(fname)
-                candidates = [
-                    os.path.join(masks_dir, base + "_mask.png"),
-                    os.path.join(masks_dir, base + "_mask.jpg"),
-                    os.path.join(masks_dir, base + ".png"),
-                ]
-                for c in candidates:
-                    if os.path.exists(c):
-                        mask_path = c
+                for candidate in [
+                    masks_dir / (base + "_mask.png"),
+                    masks_dir / (base + "_mask.jpg"),
+                    masks_dir / (base + ".png"),
+                ]:
+                    if candidate.exists():
+                        mask_path = str(candidate)
                         break
             if not os.path.exists(mask_path):
                 continue
-
             self.image_paths.append(image_path)
             self.mask_paths.append(mask_path)
 
+        if max_images > 0:
+            self.image_paths = self.image_paths[:max_images]
+            self.mask_paths = self.mask_paths[:max_images]
+
         if not self.image_paths:
-            raise RuntimeError(f"No valid image/mask pairs found under {root_dir}")
+            raise RuntimeError(
+                f"No valid image/mask pairs found under {root_dir}. "
+                f"Ensure images/ and masks/ contain matching files (same basename or _mask suffix)."
+            )
 
         # Basic normalization for ResNet-50 (ImageNet stats)
         self.image_transform = transforms.Compose(
@@ -301,13 +315,25 @@ def visualize_sample(
 def run_clinical_evaluation(cfg: ClinicalEvalConfig) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    dataset = KvasirSegDataset(cfg.kvasir_seg_dir, image_size=cfg.image_size)
+    dataset = KvasirSegDataset(
+        cfg.kvasir_seg_dir,
+        image_size=cfg.image_size,
+        max_images=cfg.max_images if cfg.max_images > 0 else -1,
+    )
     loader = DataLoader(
         dataset,
         batch_size=cfg.batch_size,
         shuffle=False,
         num_workers=cfg.num_workers,
     )
+
+    print("Clinical Evaluation Proxy (Grad-CAM vs XAI-Enhancer vs expert masks)", flush=True)
+    print(f"  Kvasir-SEG root: {cfg.kvasir_seg_dir}", flush=True)
+    print(f"  Image/mask pairs: {len(dataset)}", flush=True)
+    print(f"  Batch size: {cfg.batch_size}, image size: {cfg.image_size}", flush=True)
+    print(f"  Checkpoint: {cfg.kvasir_checkpoint_path or '(ImageNet pretrained)'}", flush=True)
+    print(f"  Device: {device}", flush=True)
+    print("", flush=True)
 
     model, target_layer = get_kvasir_model_and_target_layer(
         arch=cfg.kvasir_model_arch,
@@ -325,7 +351,9 @@ def run_clinical_evaluation(cfg: ClinicalEvalConfig) -> None:
 
     vis_count = 0
 
-    for batch_idx, (imgs_tensor, masks_gt, vis_imgs, names) in enumerate(loader):
+    for batch_idx, (imgs_tensor, masks_gt, vis_imgs, names) in enumerate(
+        tqdm(loader, desc="Clinical eval", unit="batch")
+    ):
         imgs_tensor = imgs_tensor.to(device)  # [B,C,H,W]
 
         with torch.no_grad():
@@ -369,12 +397,12 @@ def run_clinical_evaluation(cfg: ClinicalEvalConfig) -> None:
     enh_miou = float(np.mean(enh_iou_vals)) if enh_iou_vals else 0.0
     enh_mdice = float(np.mean(enh_dice_vals)) if enh_dice_vals else 0.0
 
-    print("=== Clinical Evaluation Proxy Results ===")
-    print(f"Samples evaluated: {len(grad_iou_vals)}")
-    print("")
-    print("Method,Mean_IoU,Mean_Dice")
-    print(f"Grad-CAM,{grad_miou:.4f},{grad_mdice:.4f}")
-    print(f"XAI-Enhancer,{enh_miou:.4f},{enh_mdice:.4f}")
+    print("=== Clinical Evaluation Proxy Results ===", flush=True)
+    print(f"Samples evaluated: {len(grad_iou_vals)}", flush=True)
+    print("", flush=True)
+    print("Method,Mean_IoU,Mean_Dice", flush=True)
+    print(f"Grad-CAM,{grad_miou:.4f},{grad_mdice:.4f}", flush=True)
+    print(f"XAI-Enhancer,{enh_miou:.4f},{enh_mdice:.4f}", flush=True)
 
     # Save to CSV
     with open(cfg.csv_output_path, mode="w", newline="") as f:
@@ -383,35 +411,43 @@ def run_clinical_evaluation(cfg: ClinicalEvalConfig) -> None:
         writer.writerow(["Grad-CAM", grad_miou, grad_mdice])
         writer.writerow(["XAI-Enhancer", enh_miou, enh_mdice])
 
-    print(f"\nResults saved to: {cfg.csv_output_path}")
-    print(f"Visualization samples saved to: {cfg.viz_output_dir}")
+    print(f"\nResults saved to: {cfg.csv_output_path}", flush=True)
+    print(f"Visualization samples saved to: {cfg.viz_output_dir}", flush=True)
 
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Clinical Evaluation Proxy: Compare Grad-CAM vs XAI-Enhancer against expert masks."
+        description="Clinical Evaluation Proxy: Compare Grad-CAM vs XAI-Enhancer against expert masks (Kvasir-SEG)."
     )
     parser.add_argument(
         "kvasir_seg_dir",
         type=str,
-        help="Path to Kvasir-SEG root directory with 'images' and 'masks' subfolders.",
+        nargs="?",
+        default="data/Kvasir-SEG",
+        help="Path to Kvasir-SEG root (must contain images/ and masks/). Default: data/Kvasir-SEG",
     )
     parser.add_argument(
         "--arch",
         type=str,
         default="resnet50",
-        help="Kvasir classification backbone architecture (e.g., resnet50, resnet18).",
+        help="Kvasir classification backbone (resnet50, resnet18, etc.).",
     )
     parser.add_argument(
         "--checkpoint",
         type=str,
         default="",
-        help="Path to trained Kvasir model checkpoint (.pth).",
+        help="Path to trained Kvasir model checkpoint (.pth). If omitted, uses ImageNet-pretrained backbone.",
     )
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size for evaluation.")
     parser.add_argument("--image-size", type=int, default=224, help="Input resolution (square).")
+    parser.add_argument(
+        "--max-images",
+        type=int,
+        default=-1,
+        help="Cap number of image/mask pairs to evaluate (-1 = use all).",
+    )
     parser.add_argument(
         "--csv-output",
         type=str,
@@ -422,7 +458,7 @@ if __name__ == "__main__":
         "--max-visualizations",
         type=int,
         default=5,
-        help="Number of qualitative examples to save.",
+        help="Number of qualitative 1x4 grids to save.",
     )
     parser.add_argument(
         "--viz-output-dir",
@@ -442,6 +478,7 @@ if __name__ == "__main__":
         csv_output_path=args.csv_output,
         max_visualizations=args.max_visualizations,
         viz_output_dir=args.viz_output_dir,
+        max_images=args.max_images,
     )
 
     run_clinical_evaluation(config)
