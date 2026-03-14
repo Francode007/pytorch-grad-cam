@@ -21,12 +21,8 @@ from tqdm import tqdm
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 
-from XAI_Enhancer_module.utils.model_utils import (
-    get_device,
-    MEAN,
-    STD,
-    transformations,
-)
+from XAI_Enhancer_module.utils.model_utils import get_device, MEAN, STD, transformations
+from XAI_Enhancer_module.kvasir.data import load_split_file
 from XAI_Enhancer_module.utils.optimized_cam_extractor import OptimizedCamExtractor
 
 
@@ -40,22 +36,40 @@ class RobustnessConfig:
     brightness_beta: float = 0.10  # brightness shift range around 0.0
     max_visualizations: int = 3
     output_dir: str = "robustness_outputs"
+    split: str = "val"          # Kvasir split to use when splits/ exists
+    max_images: int = -1        # optional cap on number of images; -1 = all
 
 
 class MedicalImageDataset(Dataset):
     """
-    Lightweight dataset that loads all images from a directory (recursively).
-    Intended for qualitative robustness analysis on medical images.
+    Dataset for robustness experiments.
+
+    - If a Kvasir splits file exists at <image_dir>/splits/<split>.txt, we use
+      that split (e.g. val) exactly like kvasir/eval_cams.py.
+    - Otherwise, we fall back to scanning the directory recursively for images.
     """
 
-    def __init__(self, image_dir: str):
+    def __init__(self, image_dir: str, split: str = "val", max_images: int = -1):
         self.image_paths: List[str] = []
-        for root, _, files in os.walk(image_dir):
-            for f in files:
-                if f.lower().endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp")):
-                    self.image_paths.append(os.path.join(root, f))
+        root = Path(image_dir)
+        split_file = root / "splits" / f"{split}.txt"
+
+        if split_file.exists():
+            # Use the same split mechanism as Kvasir evaluation (val set)
+            pairs = load_split_file(split_file, root)
+            self.image_paths = [str(p) for p, _ in pairs]
+        else:
+            # Fallback: scan directory for all images
+            for dirpath, _, files in os.walk(image_dir):
+                for f in files:
+                    if f.lower().endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp")):
+                        self.image_paths.append(os.path.join(dirpath, f))
+
+        if max_images > 0:
+            self.image_paths = self.image_paths[:max_images]
+
         if not self.image_paths:
-            raise RuntimeError(f"No image files found in directory: {image_dir}")
+            raise RuntimeError(f"No image files found in directory/split: {image_dir} (split={split})")
 
     def __len__(self) -> int:
         return len(self.image_paths)
@@ -301,7 +315,7 @@ def visualize_sample(
 
 def run_robustness_experiment(cfg: RobustnessConfig) -> None:
     device = torch.device(get_device("cuda"))
-    dataset = MedicalImageDataset(cfg.image_dir)
+    dataset = MedicalImageDataset(cfg.image_dir, split=cfg.split, max_images=cfg.max_images)
     loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False, num_workers=cfg.num_workers)
 
     model = get_resnet50_for_explainability(device)
@@ -402,7 +416,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "image_dir",
         type=str,
-        help="Directory containing medical images (will be scanned recursively).",
+        help="Kvasir data root (e.g. data/kvasir-v2). If splits/ exists here, the specified split is used.",
     )
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size for robustness evaluation.")
     parser.add_argument("--gaussian-sigma", type=float, default=0.05, help="Std of Gaussian sensor noise.")
@@ -430,6 +444,18 @@ if __name__ == "__main__":
         default="robustness_outputs",
         help="Directory to save visualization figures.",
     )
+    parser.add_argument(
+        "--split",
+        type=str,
+        default="val",
+        help="Kvasir split to use when splits/ exists at image_dir (default: val).",
+    )
+    parser.add_argument(
+        "--max-images",
+        type=int,
+        default=-1,
+        help="Optional cap on number of images from the split (-1 = use all).",
+    )
 
     args = parser.parse_args()
     config = RobustnessConfig(
@@ -440,6 +466,8 @@ if __name__ == "__main__":
         brightness_beta=args.brightness_beta,
         max_visualizations=args.max_visualizations,
         output_dir=args.output_dir,
+        split=args.split,
+        max_images=args.max_images,
     )
     run_robustness_experiment(config)
 
