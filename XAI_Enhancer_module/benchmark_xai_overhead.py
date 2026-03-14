@@ -1,6 +1,13 @@
 import csv
 import sys
+from pathlib import Path
 from typing import Callable, Dict, List
+
+# Project root so "XAI_Enhancer_module" can be imported when script is run as
+# python XAI_Enhancer_module/benchmark_xai_overhead.py (append keeps venv's pytorch_grad_cam first)
+_TOP = Path(__file__).resolve().parent.parent
+if _TOP not in [Path(p).resolve() for p in sys.path]:
+    sys.path.append(str(_TOP))
 
 import torch
 import torch.nn as nn
