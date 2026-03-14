@@ -37,32 +37,23 @@ def load_resnet50(device: torch.device) -> nn.Module:
 
 def get_resnet50_target_layers(model: nn.Module) -> Dict[str, List[nn.Module]]:
     """
-    Collect representative convolutional target layers for CAM methods.
+    Select target layers for CAM methods:
 
-    - For base GradCAM / LayerCAM / HiResCAM we use the last block of layer4.
-    - For the XAI-Enhancer we use one representative conv layer from each stage.
+    - Standard CAMs (GradCAM, LayerCAM, HiResCAM): last convolutional layer only.
+    - XAI-Enhancer: all convolutional layers (full-depth aggregation).
     """
-    # Last bottleneck block of each stage
-    layer1_block = model.layer1[-1]
-    layer2_block = model.layer2[-1]
-    layer3_block = model.layer3[-1]
-    layer4_block = model.layer4[-1]
+    all_conv_layers: List[nn.Module] = []
+    for module in model.modules():
+        if isinstance(module, (nn.Conv2d, nn.Conv1d, nn.Conv3d)):
+            all_conv_layers.append(module)
 
-    # For standard methods we typically use the deepest conv layer
-    standard_target = [layer4_block.conv3]
+    if not all_conv_layers:
+        raise ValueError("No convolutional layers found in ResNet-50.")
 
-    # For the enhancer we provide multiple layers across the hierarchy
-    enhancer_targets = [
-        layer1_block.conv3,
-        layer2_block.conv3,
-        layer3_block.conv3,
-        layer4_block.conv3,
-    ]
+    standard_target = [all_conv_layers[-1]]
+    enhancer_targets = all_conv_layers
 
-    return {
-        "standard": standard_target,
-        "enhancer": enhancer_targets,
-    }
+    return {"standard": standard_target, "enhancer": enhancer_targets}
 
 
 def benchmark_method(
