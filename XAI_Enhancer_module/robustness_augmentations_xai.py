@@ -16,6 +16,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
+from tqdm import tqdm
 
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
@@ -313,7 +314,14 @@ def run_robustness_experiment(cfg: RobustnessConfig) -> None:
 
     vis_count = 0
 
-    for batch_idx, (batch_tensors, batch_imgs_np, paths) in enumerate(loader):
+    print(f"Running robustness experiment on {len(dataset)} images from '{cfg.image_dir}'", flush=True)
+    print(f"Batch size: {cfg.batch_size}, Gaussian σ={cfg.gaussian_sigma}, "
+          f"contrast α={cfg.contrast_alpha}, brightness β={cfg.brightness_beta}", flush=True)
+    print("", flush=True)
+
+    for batch_idx, (batch_tensors, batch_imgs_np, paths) in enumerate(
+        tqdm(loader, desc="Batches", unit="batch")
+    ):
         # batch_tensors: [B, C, H, W] (already normalized)
         b = batch_tensors.shape[0]
 
