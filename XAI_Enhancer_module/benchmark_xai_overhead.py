@@ -1,6 +1,12 @@
 import csv
 import sys
+from pathlib import Path
 from typing import Callable, Dict, List
+
+# Ensure project root is on path so pytorch_grad_cam and XAI_Enhancer_module import correctly
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import torch
 import torch.nn as nn
