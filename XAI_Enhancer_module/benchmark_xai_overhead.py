@@ -192,6 +192,8 @@ def main() -> None:
                         help="Timed iterations per method. Use 100–200 if OOM on XAI-Enhancer.")
     parser.add_argument("--skip-enhancer", action="store_true",
                         help="Skip XAI-Enhancer (use when testing standard methods only).")
+    parser.add_argument("--output", "-o", type=str, default="benchmark_xai_results.csv",
+                        help="Output CSV path for results (default: benchmark_xai_results.csv).")
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
@@ -227,15 +229,24 @@ def main() -> None:
 
     print("=== Results ===", flush=True)
     fieldnames = ["Method", "Latency_ms", "Peak_VRAM_MB"]
-    writer = csv.DictWriter(sys.stdout, fieldnames=fieldnames)
-    writer.writeheader()
+    out_stdout = csv.DictWriter(sys.stdout, fieldnames=fieldnames)
+    out_stdout.writeheader()
     for row in results:
-        row_out = {
+        out_stdout.writerow({
             "Method": row["Method"],
             "Latency_ms": f"{row['Latency_ms']:.4f}",
             "Peak_VRAM_MB": f"{row['Peak_VRAM_MB']:.2f}",
-        }
-        writer.writerow(row_out)
+        })
+    with open(args.output, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        for row in results:
+            w.writerow({
+                "Method": row["Method"],
+                "Latency_ms": row["Latency_ms"],
+                "Peak_VRAM_MB": row["Peak_VRAM_MB"],
+            })
+    print(f"Results saved to {args.output}", flush=True)
 
 
 if __name__ == "__main__":
