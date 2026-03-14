@@ -1,6 +1,14 @@
 import os
+import sys
+from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Tuple, Dict
+
+# Project root so "XAI_Enhancer_module" can be imported when run as
+# python XAI_Enhancer_module/robustness_augmentations_xai.py ...
+_TOP = Path(__file__).resolve().parent.parent
+if _TOP not in [Path(p).resolve() for p in sys.path]:
+    sys.path.append(str(_TOP))
 
 import cv2
 import matplotlib.pyplot as plt
