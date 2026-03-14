@@ -1,4 +1,5 @@
 import csv
+import gc
 import sys
 from pathlib import Path
 from typing import Callable, Dict, List
@@ -69,6 +70,7 @@ def benchmark_method(
     device: torch.device,
     warmup_iters: int = 50,
     benchmark_iters: int = 1000,
+    log_progress: bool = True,
 ) -> Dict[str, float]:
     """
     Benchmark a single XAI method.
@@ -83,18 +85,24 @@ def benchmark_method(
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats(device)
 
-    # Warm-up
-    for _ in range(warmup_iters):
+    if log_progress:
+        print(f"  Warm-up ({warmup_iters} iters)...", flush=True)
+    for i in range(warmup_iters):
         forward_fn()
+        if log_progress and (i + 1) % 25 == 0 and i + 1 < warmup_iters:
+            print(f"    warm-up {i + 1}/{warmup_iters}", flush=True)
     torch.cuda.synchronize(device)
 
-    # Timed run
+    if log_progress:
+        print(f"  Timed run ({benchmark_iters} iters)...", flush=True)
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
 
     start_event.record()
-    for _ in range(benchmark_iters):
+    for i in range(benchmark_iters):
         forward_fn()
+        if log_progress and (i + 1) % 200 == 0 and i + 1 < benchmark_iters:
+            print(f"    timed {i + 1}/{benchmark_iters}", flush=True)
     end_event.record()
 
     torch.cuda.synchronize(device)
@@ -104,6 +112,9 @@ def benchmark_method(
     peak_bytes = torch.cuda.max_memory_allocated(device)
     peak_mb = peak_bytes / (1024.0 ** 2)
 
+    if log_progress:
+        print(f"  Done. Peak VRAM: {peak_mb:.1f} MB, Avg latency: {avg_ms:.2f} ms", flush=True)
+
     return {
         "Method": name,
         "Latency_ms": avg_ms,
@@ -111,77 +122,114 @@ def benchmark_method(
     }
 
 
+def _run_benchmark_one_method(
+    method_name: str,
+    model: nn.Module,
+    target_layers: Dict[str, List[nn.Module]],
+    dummy_input: torch.Tensor,
+    device: torch.device,
+    warmup_iters: int,
+    benchmark_iters: int,
+) -> Dict[str, float]:
+    """
+    Create only this method's CAM/extractor, run benchmark, return result.
+    Caller must ensure no other CAM objects are alive so memory is bounded.
+    """
+    targets = [ClassifierOutputTarget(0)]
+
+    if method_name == "Base GradCAM":
+        cam = GradCAM(model=model, target_layers=target_layers["standard"])
+        def forward_fn() -> None:
+            _ = cam(input_tensor=dummy_input, targets=targets)
+    elif method_name == "LayerCAM":
+        cam = LayerCAM(model=model, target_layers=target_layers["standard"])
+        def forward_fn() -> None:
+            _ = cam(input_tensor=dummy_input, targets=targets)
+    elif method_name == "HR-CAM":
+        cam = HiResCAM(model=model, target_layers=target_layers["standard"])
+        def forward_fn() -> None:
+            _ = cam(input_tensor=dummy_input, targets=targets)
+    elif method_name == "XAI-Enhancer":
+        extractor = OptimizedCamExtractor(
+            model=model,
+            model_name="resnet50",
+            conv_layers=target_layers["enhancer"],
+            cam_method="HiResCAMEnhanced",
+            device_preference="cuda",
+            layer_batch_size=4,
+        )
+        def forward_fn() -> None:
+            _, _ = extractor.extract_saliency_map(
+                input_data=dummy_input, predicted_label=0, use_cache=False
+            )
+        cam = extractor  # for cleanup below
+    else:
+        raise ValueError(f"Unknown method: {method_name}")
+
+    result = benchmark_method(
+        method_name, forward_fn, device,
+        warmup_iters=warmup_iters,
+        benchmark_iters=benchmark_iters,
+        log_progress=True,
+    )
+    # Release CAM/extractor and hooks so next method doesn't add to peak memory
+    del cam
+    if method_name == "XAI-Enhancer":
+        try:
+            del extractor
+        except NameError:
+            pass
+    gc.collect()
+    torch.cuda.empty_cache()
+    return result
+
+
 def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser(description="Benchmark XAI methods: latency and peak VRAM.")
+    parser.add_argument("--warmup", type=int, default=50, help="Warm-up iterations per method.")
+    parser.add_argument("--iters", type=int, default=1000,
+                        help="Timed iterations per method. Use 100–200 if OOM on XAI-Enhancer.")
+    parser.add_argument("--skip-enhancer", action="store_true",
+                        help="Skip XAI-Enhancer (use when testing standard methods only).")
+    args = parser.parse_args()
+
     if not torch.cuda.is_available():
         raise SystemExit("CUDA device not available. Please run on a CUDA-enabled GPU.")
 
-    # Device: use CUDA if available (pytorch-grad-cam uses model's device)
     device = torch.device(get_device("cuda"))
-
-    # Enable cuDNN benchmarking for more stable, optimized timings
     if torch.backends.cudnn.is_available():
         torch.backends.cudnn.benchmark = True
 
-    # Load model and prepare dummy input
+    print("Loading ResNet-50 and building target layers...", flush=True)
     model = load_resnet50(device)
     target_layers = get_resnet50_target_layers(model)
-
     dummy_input = torch.randn(1, 3, 224, 224, device=device)
-    # Use a fixed target class; for overhead this is sufficient and reproducible
-    targets = [ClassifierOutputTarget(0)]
-
-    # --- Base GradCAM ---
-    # CAM classes take (model, target_layers, reshape_transform=None); device comes from model
-    gradcam = GradCAM(model=model, target_layers=target_layers["standard"])
-
-    def run_gradcam() -> None:
-        _ = gradcam(input_tensor=dummy_input, targets=targets)
-
-    # --- LayerCAM ---
-    layercam = LayerCAM(model=model, target_layers=target_layers["standard"])
-
-    def run_layercam() -> None:
-        _ = layercam(input_tensor=dummy_input, targets=targets)
-
-    # --- HiResCAM (HR-CAM) ---
-    hrcam = HiResCAM(model=model, target_layers=target_layers["standard"])
-
-    def run_hrcam() -> None:
-        _ = hrcam(input_tensor=dummy_input, targets=targets)
-
-    # --- Custom XAI-Enhancer ---
-    # We use the optimized extractor with enhanced HiResCAM underneath,
-    # aggregating explanations across multiple convolutional stages.
-    enhancer_extractor = OptimizedCamExtractor(
-        model=model,
-        model_name="resnet50",
-        conv_layers=target_layers["enhancer"],
-        cam_method="HiResCAMEnhanced",
-        device_preference="cuda",
-        layer_batch_size=4,  # small layer batch size for this single-image benchmark
-    )
-
-    def run_xai_enhancer() -> None:
-        # We bypass caching and use a fixed label to isolate computational overhead.
-        _input_tensor, _saliency_map = enhancer_extractor.extract_saliency_map(
-            input_data=dummy_input,
-            predicted_label=0,
-            use_cache=False,
-        )
+    n_std = len(target_layers["standard"])
+    n_enh = len(target_layers["enhancer"])
+    print(f"  Standard (last layer): {n_std} layer(s). Enhancer (all conv): {n_enh} layers.", flush=True)
+    print("", flush=True)
 
     results: List[Dict[str, float]] = []
+    method_names = ["Base GradCAM", "LayerCAM", "HR-CAM"]
+    if not args.skip_enhancer:
+        method_names.append("XAI-Enhancer")
 
-    results.append(benchmark_method("Base GradCAM", run_gradcam, device))
-    results.append(benchmark_method("LayerCAM", run_layercam, device))
-    results.append(benchmark_method("HR-CAM", run_hrcam, device))
-    results.append(benchmark_method("XAI-Enhancer", run_xai_enhancer, device))
+    for name in method_names:
+        print(f"Benchmarking {name} (warmup={args.warmup}, iters={args.iters})...", flush=True)
+        res = _run_benchmark_one_method(
+            name, model, target_layers, dummy_input, device,
+            warmup_iters=args.warmup,
+            benchmark_iters=args.iters,
+        )
+        results.append(res)
+        print("", flush=True)
 
-    # Output as formatted CSV to stdout
+    print("=== Results ===", flush=True)
     fieldnames = ["Method", "Latency_ms", "Peak_VRAM_MB"]
     writer = csv.DictWriter(sys.stdout, fieldnames=fieldnames)
     writer.writeheader()
     for row in results:
-        # Round for readability but keep numeric precision reasonable
         row_out = {
             "Method": row["Method"],
             "Latency_ms": f"{row['Latency_ms']:.4f}",
