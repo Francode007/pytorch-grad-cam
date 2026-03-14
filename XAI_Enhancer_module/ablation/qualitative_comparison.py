@@ -13,6 +13,7 @@ Usage:
         --img-kvasir data/kvasir-v2/polyps/polyps/00072d5f-7cd8-434c-8a5a-1a0bb2c9711d.jpg \
         --ckpt-ibs  ./ibs_runs/resnet50/best.pth \
         --ckpt-kvasir ./kvasir_runs/resnet50/best.pth \
+        --arch resnet50 \
         --output qualitative_comparison.pdf \
         --device cuda
 """
@@ -52,8 +53,8 @@ IMAGENET_STD = [0.229, 0.224, 0.225]
 IBS_MEAN = [0.6380, 0.3422, 0.2275]
 IBS_STD = [0.2448, 0.2060, 0.1710]
 
-ARCH = "resnet50"
 NUM_HRCAM_LAYERS = 5
+SUPPORTED_ARCHS = ("resnet50", "resnet18", "resnet34", "densenet121", "vgg16", "vgg19")
 
 
 # ---------------------------------------------------------------------------
@@ -117,9 +118,9 @@ def generate_enhanced_hirescam(
     model: nn.Module, model_name: str, tensor: torch.Tensor,
     label: int, device: torch.device,
 ) -> np.ndarray:
-    """XAI-Enhancer weighted aggregation → (H, W) grayscale map."""
+    """XAI-Enhancer weighted aggregation over all conv layers → (H, W) grayscale map."""
     all_conv = _get_all_conv2d(model)
-    target_layers = all_conv[-NUM_HRCAM_LAYERS:]
+    target_layers = all_conv  # Use all layers (same as benchmark / robustness / clinical_eval)
     extractor = EnhancedExtractorV2(
         model=model,
         model_name=model_name,
@@ -157,8 +158,15 @@ def parse_args():
     )
     p.add_argument("--img-ibs", required=True, help="Path to IBS image")
     p.add_argument("--img-kvasir", required=True, help="Path to Kvasir-v2 image")
-    p.add_argument("--ckpt-ibs", required=True, help="ResNet-50 IBS checkpoint")
-    p.add_argument("--ckpt-kvasir", required=True, help="ResNet-50 Kvasir checkpoint")
+    p.add_argument("--ckpt-ibs", required=True, help="IBS model checkpoint (architecture must match --arch)")
+    p.add_argument("--ckpt-kvasir", required=True, help="Kvasir model checkpoint (architecture must match --arch)")
+    p.add_argument(
+        "--arch",
+        type=str,
+        default="resnet50",
+        choices=SUPPORTED_ARCHS,
+        help="Model architecture for both IBS and Kvasir (default: resnet50).",
+    )
     p.add_argument("--output", default="qualitative_comparison.pdf")
     p.add_argument("--device", default="cuda")
     return p.parse_args()
@@ -170,13 +178,14 @@ def main():
     print(f"Device: {device}")
 
     # --- Load models ---
-    print("Loading IBS ResNet-50...")
-    model_ibs = build_ibs_model(ARCH, num_classes=IBS_NUM_CLASSES, pretrained=False)
+    arch = args.arch
+    print(f"Loading IBS model ({arch})...")
+    model_ibs = build_ibs_model(arch, num_classes=IBS_NUM_CLASSES, pretrained=False)
     load_ibs_checkpoint(model_ibs, args.ckpt_ibs, device)
     model_ibs = model_ibs.to(device).eval()
 
-    print("Loading Kvasir ResNet-50...")
-    model_kvasir = build_kvasir_model(ARCH, num_classes=KVASIR_NUM_CLASSES, pretrained=False)
+    print(f"Loading Kvasir model ({arch})...")
+    model_kvasir = build_kvasir_model(arch, num_classes=KVASIR_NUM_CLASSES, pretrained=False)
     load_kvasir_checkpoint(model_kvasir, args.ckpt_kvasir, device)
     model_kvasir = model_kvasir.to(device).eval()
 
@@ -197,8 +206,8 @@ def main():
     print("Generating heatmaps...")
     heatmaps = {}
     for tag, model, tensor, label, name in [
-        ("ibs", model_ibs, ibs_tensor, ibs_label, ARCH),
-        ("kvasir", model_kvasir, kvasir_tensor, kvasir_label, ARCH),
+        ("ibs", model_ibs, ibs_tensor, ibs_label, arch),
+        ("kvasir", model_kvasir, kvasir_tensor, kvasir_label, arch),
     ]:
         heatmaps[(tag, "base")] = generate_base_hirescam(model, tensor, label, device)
         heatmaps[(tag, "hrcam")] = generate_hrcam(model, tensor, label, device)
