@@ -177,9 +177,9 @@ def _evaluate_saliency_metrics(
         image_tensor,
         saliency_map,
         predicted_label,
-        step_size=224,  # keep consistent with 224x224 resolution by default
+        step_size=224,   # 224x224 resolution → one row worth of pixels per step
         verbose=False,
-        batch_size=1,
+        batch_size=2048,  # large chunk of masks per forward to better utilize GPU
     )
     road_vals = [v for k, v in metrics.items() if k.startswith("road_")]
     metrics["road_mean"] = float(np.mean(road_vals)) if road_vals else 0.0
@@ -333,8 +333,11 @@ def main():
 
     loader = DataLoader(
         _SplitDataset(samples, evaluator.transform),
-        batch_size=1, shuffle=False, num_workers=0,
+        batch_size=1,
+        shuffle=False,
+        num_workers=24,
         pin_memory=(device.type == "cuda"),
+        prefetch_factor=6 if 24 > 0 else None,
     )
 
     # --- Run ---
