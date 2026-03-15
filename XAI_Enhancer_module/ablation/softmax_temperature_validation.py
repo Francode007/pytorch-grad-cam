@@ -69,22 +69,23 @@ class _SplitDataset(Dataset):
         return self.transform(image), label, str(path)
 
 
-def _extract_raw_scores(
+def _extract_cam_and_scores(
     image_tensor: torch.Tensor,
     model: nn.Module,
     target_layers: List[nn.Module],
     device: torch.device,
     predicted_label: int,
-) -> np.ndarray:
+) -> Tuple[List[torch.Tensor], np.ndarray]:
     """
-    Run the XAI-Enhancer forward pipeline for one image and return the
-    pre-softmax cosine similarity scores S_l for every target layer.
+    Run the XAI-Enhancer forward pipeline for one image and return:
+      * per-layer CAMs
+      * pre-softmax cosine similarity scores S_l for every target layer.
     """
     img_batch = image_tensor.unsqueeze(0).to(device)
     targets = [ClassifierOutputTarget(predicted_label)]
 
     cam_method = HiResCAMEnhanced(model, target_layers)
-    _cam_per_layer, mod_act_per_layer = cam_method(img_batch, targets)
+    cam_per_layer, mod_act_per_layer = cam_method(img_batch, targets)
 
     model.eval()
     with torch.no_grad():
@@ -112,20 +113,17 @@ def _extract_raw_scores(
         cos = F.cosine_similarity(actual_output, modified_output, dim=1)
         similarities.append(cos.item())
 
+    # Release hooks from HiResCAMEnhanced
     try:
         cam_method.activations_and_grads.release()
     except Exception:
         pass
 
-    return np.array(similarities, dtype=np.float64)
+    return cam_per_layer, np.array(similarities, dtype=np.float64)
 
 
 def _aggregate_cam_with_temperature(
-    image_tensor: torch.Tensor,
-    model: nn.Module,
-    target_layers: List[nn.Module],
-    device: torch.device,
-    predicted_label: int,
+    cam_per_layer: List[torch.Tensor],
     raw_scores: np.ndarray,
     temperature: float,
 ) -> np.ndarray:
@@ -135,12 +133,6 @@ def _aggregate_cam_with_temperature(
 
     Returns a 2D saliency map [H, W] normalised to [0, 1].
     """
-    img_batch = image_tensor.unsqueeze(0).to(device)
-    targets = [ClassifierOutputTarget(predicted_label)]
-
-    cam_method = HiResCAMEnhanced(model, target_layers)
-    cam_per_layer, _ = cam_method(img_batch, targets)
-
     scores_t = torch.tensor(raw_scores, dtype=torch.float32)
     weights = F.softmax(scores_t / temperature, dim=0)
 
@@ -168,11 +160,6 @@ def _aggregate_cam_with_temperature(
     if denom > 1e-8:
         final_cam = final_cam / denom
 
-    try:
-        cam_method.activations_and_grads.release()
-    except Exception:
-        pass
-
     return final_cam.cpu().numpy()
 
 
@@ -187,8 +174,12 @@ def _evaluate_saliency_metrics(
     existing evaluator.
     """
     metrics = evaluator._evaluate_saliency_map(
-        image_tensor, saliency_map, predicted_label,
-        step_size=50, verbose=False, batch_size=1,
+        image_tensor,
+        saliency_map,
+        predicted_label,
+        step_size=224,  # keep consistent with 224x224 resolution by default
+        verbose=False,
+        batch_size=1,
     )
     road_vals = [v for k, v in metrics.items() if k.startswith("road_")]
     metrics["road_mean"] = float(np.mean(road_vals)) if road_vals else 0.0
@@ -220,7 +211,7 @@ def run_temperature_ablation(
         with torch.no_grad():
             pred = model(img_tensor.unsqueeze(0).to(device)).argmax(dim=1).item()
 
-        raw_scores = _extract_raw_scores(
+        cam_per_layer, raw_scores = _extract_cam_and_scores(
             img_tensor, model, target_layers, device, pred,
         )
 
@@ -230,10 +221,7 @@ def run_temperature_ablation(
             ).numpy()
             wt_std = float(np.std(weights_t))
 
-            saliency = _aggregate_cam_with_temperature(
-                img_tensor, model, target_layers, device, pred,
-                raw_scores, t,
-            )
+            saliency = _aggregate_cam_with_temperature(cam_per_layer, raw_scores, t)
 
             metrics = _evaluate_saliency_metrics(evaluator, img_tensor, saliency, pred)
             accum[t]["ins"].append(metrics.get("insertion_auc", 0.0))
