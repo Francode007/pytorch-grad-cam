@@ -2,17 +2,26 @@
 
 Planning documents: `../cmpb_revision/` (repository root).
 
-## Splits
+## Splits (Phase 1, R3-1)
 
 ```bash
-# Kvasir-v2: 70/10/20 + optional dedupe
+# Kvasir-v2: 70/10/20 stratified + optional pHash near-duplicate reassignment
 python -m XAI_Enhancer_module.kvasir.download_and_prepare --data-root data --skip-download --dedupe
 
-# IBS: 5-fold patient-level CV
-python -m XAI_Enhancer_module.ibs.download_and_prepare --data-root data --skip-download
+# Smoke: print Kvasir split summary CSV (+ IBS filename audit)
+python -m XAI_Enhancer_module.common.smoke_splits --dedupe
+
+# IBS: 5-fold patient-level CV — requires a patient/exam map for the Kaggle numeric dump
+python -m XAI_Enhancer_module.ibs.download_and_prepare --data-root data --skip-download \
+  --groups-csv path/to/ibs_groups.csv
 ```
 
-Split summaries are written to `data/<dataset>/splits/split_summary_*.csv`.
+`ibs_groups.csv` format: `rel_path,group_id` (or `filename,group_id`). The Kaggle
+`pre-processed-ibs` release has no recoverable IDs (`2882.jpg`, no EXIF); see D-M4.
+
+Kvasir-v2 smoke (seed=42, then pHash Hamming ≤ 6): 8,000 images → 5,491 / 921 / 1,588
+after 414 near-duplicate reassignments (979 pairs). Summaries:
+`data/<dataset>/splits/split_summary_*.csv`.
 
 ## Training (to be updated in Phase 2)
 

@@ -1,5 +1,5 @@
 """
-Kvasir-v2 training script with 80:20 train/val, optimized batching, and standard args.
+Kvasir-v2 training script with 70/10/20 train/val/test, optimized batching, and standard args.
 """
 
 import argparse
@@ -29,7 +29,7 @@ from XAI_Enhancer_module.utils.model_utils import get_device
 def parse_args():
     p = argparse.ArgumentParser(description="Train Kvasir-v2 classifier")
     p.add_argument("--data-root", type=str, default="data/kvasir-v2", help="Kvasir-v2 root (or parent of kvasir-v2)")
-    p.add_argument("--val-ratio", type=float, default=0.2, help="Validation fraction (80:20 default)")
+    p.add_argument("--val-ratio", type=float, default=0.1, help="Validation fraction if splits are created here (70/10/20 default)")
     p.add_argument("--seed", type=int, default=42, help="Random seed for split")
     p.add_argument("--arch", type=str, default="resnet50", choices=["resnet50", "resnet18", "resnet34", "densenet121", "vgg16", "vgg19"])
     p.add_argument("--epochs", type=int, default=50)
@@ -68,9 +68,9 @@ def create_loaders(args, data_root: Path):
     train_tf = get_train_transforms()
     val_tf = get_val_transforms()
     splits_dir = data_root / "splits"
-    if not (splits_dir / "train.txt").exists():
-        print("Creating 80:20 train/val split...")
-        prepare_splits(str(data_root), val_ratio=args.val_ratio, seed=args.seed)
+    if not (splits_dir / "train.txt").exists() or not (splits_dir / "test.txt").exists():
+        print("Creating 70/10/20 train/val/test split...")
+        prepare_splits(str(data_root), seed=args.seed)
     train_ds = KvasirDataset(str(data_root), split="train", transform=train_tf, splits_dir=str(splits_dir))
     val_ds = KvasirDataset(str(data_root), split="val", transform=val_tf, splits_dir=str(splits_dir))
     train_loader = DataLoader(

@@ -21,6 +21,8 @@ try:
         _find_image_paths,
     )
     from XAI_Enhancer_module.common.splits import (
+        GroupIdError,
+        diagnose_ibs_grouping,
         prepare_ibs_patient_folds,
         write_split_summary,
     )
@@ -47,6 +49,12 @@ def parse_args():
         help="Download source: kaggle (default), zip (local .zip), manual (print instructions only)",
     )
     p.add_argument("--skip-download", action="store_true", help="Only run prepare_splits (dataset already present)")
+    p.add_argument(
+        "--groups-csv",
+        type=str,
+        default="",
+        help="Optional CSV mapping image path/filename → patient/exam id (required for the Kaggle numeric dump)",
+    )
     return p.parse_args()
 
 
@@ -98,12 +106,27 @@ def main():
             f"{extract_dir}/<class_name>/."
         )
     print(f"Using data root: {use_root} ({len(pairs)} images)")
-    fold_paths = prepare_ibs_patient_folds(
-        str(use_root),
-        n_folds=args.n_folds,
-        seed=args.seed,
-        inner_val_ratio=args.inner_val_ratio,
-    )
+    diag = diagnose_ibs_grouping(use_root)
+    print(f"IBS grouping: resolved={diag['n_resolved']} unresolved={diag['n_unresolved']} "
+          f"exif={diag['exif_present']}")
+    print("Filename samples:", diag["samples"][:12])
+    groups_csv = args.groups_csv or None
+    try:
+        fold_paths = prepare_ibs_patient_folds(
+            str(use_root),
+            n_folds=args.n_folds,
+            seed=args.seed,
+            inner_val_ratio=args.inner_val_ratio,
+            groups_csv=groups_csv,
+        )
+    except GroupIdError as e:
+        print(f"\n{e}")
+        print(
+            "\nNext step: recover exam IDs from the Dryad archives "
+            "(doi:10.5061/dryad.9s4mw6mkp) or request a mapping from the data owner, "
+            "then re-run with --groups-csv path/to/groups.csv"
+        )
+        sys.exit(1)
     summary = write_split_summary(str(use_root), dataset="ibs", class_names=IBS_CLASSES)
     print(f"Created {len(fold_paths)} folds under {use_root / 'splits'}")
     print(f"Split summary: {summary}")

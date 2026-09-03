@@ -1,5 +1,5 @@
 """
-IBS (Pre-processed) dataset: load, split (80:20), and download utilities.
+IBS (Pre-processed) dataset: load, patient-level folds, and download utilities.
 Uses IBS dataset-specific mean/std normalization with ImageNet-style resize + crop.
 """
 
@@ -7,9 +7,10 @@ import os
 import random
 import threading
 import time
+import warnings
 import zipfile
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 import torch
 from tqdm import tqdm
@@ -74,15 +75,27 @@ def _find_image_paths(root: Path, extensions: Tuple[str, ...] = (".jpg", ".jpeg"
     return out
 
 
-def prepare_splits(
+def extract_group_id(
+    image_path: Path,
+    data_root: Optional[Path] = None,
+    group_map: Optional[Mapping[str, str]] = None,
+) -> str:
+    """Patient/exam id from path. Canonical implementation: common.splits.extract_group_id."""
+    from XAI_Enhancer_module.common.splits import extract_group_id as _extract
+
+    return _extract(image_path, data_root=data_root, group_map=group_map)
+
+
+def prepare_splits_image_level_deprecated(
     data_root: str,
     val_ratio: float = 0.2,
     seed: int = 42,
     splits_dir: Optional[str] = None,
 ) -> Tuple[Path, Path]:
     """
-    Create 80:20 stratified train/val split files under data_root/splits.
-    Returns paths to train.txt and val.txt (each line: relative_path\tlabel_index).
+    Deprecated 80:20 image-level train/val split (leaks patients; R3-1).
+
+    Kept so old logs remain interpretable. New runs must use prepare_patient_folds().
     """
     data_root = Path(data_root)
     if splits_dir is None:
@@ -118,6 +131,47 @@ def prepare_splits(
             f.write(f"{rel(p)}\t{lbl}\n")
 
     return train_file, val_file
+
+
+def prepare_patient_folds(
+    data_root: str,
+    n_folds: int = 5,
+    seed: int = 42,
+    inner_val_ratio: float = 0.15,
+    splits_dir: Optional[str] = None,
+    groups_csv: Optional[str] = None,
+    group_map: Optional[Mapping[str, str]] = None,
+) -> Dict[int, Dict[str, Path]]:
+    """Patient-disjoint 5-fold CV with an inner val split (R3-1)."""
+    from XAI_Enhancer_module.common.splits import prepare_ibs_patient_folds
+
+    return prepare_ibs_patient_folds(
+        data_root,
+        n_folds=n_folds,
+        seed=seed,
+        inner_val_ratio=inner_val_ratio,
+        splits_dir=splits_dir,
+        groups_csv=groups_csv,
+        group_map=group_map,
+    )
+
+
+def prepare_splits(
+    data_root: str,
+    val_ratio: float = 0.2,
+    seed: int = 42,
+    splits_dir: Optional[str] = None,
+) -> Tuple[Path, Path]:
+    """Deprecated alias for image-level 80:20. Prefer prepare_patient_folds()."""
+    warnings.warn(
+        "ibs.data.prepare_splits is the deprecated image-level 80:20 split (R3-1). "
+        "Use prepare_patient_folds() for the revision protocol.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return prepare_splits_image_level_deprecated(
+        data_root, val_ratio=val_ratio, seed=seed, splits_dir=splits_dir,
+    )
 
 
 def load_split_file(split_path: Path, data_root: Path) -> List[Tuple[Path, int]]:
@@ -158,7 +212,8 @@ class IBSDataset(Dataset):
         split_file = splits_dir / f"{split}.txt"
         if not split_file.exists():
             raise FileNotFoundError(
-                f"Split file not found: {split_file}. Run prepare_splits() first."
+                f"Split file not found: {split_file}. "
+                "Run prepare_patient_folds() (or download_and_prepare) first."
             )
         self.samples = load_split_file(split_file, self.data_root)
 

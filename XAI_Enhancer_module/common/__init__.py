@@ -1,15 +1,23 @@
 """Shared utilities for the CMPB revision (splits, training matrix, stats)."""
 
 from XAI_Enhancer_module.common.splits import (
-    prepare_kvasir_splits,
-    prepare_ibs_patient_folds,
-    write_split_summary,
+    GroupIdError,
+    deduplicate_across_splits,
+    diagnose_ibs_grouping,
     extract_group_id,
+    load_group_map,
+    prepare_ibs_patient_folds,
+    prepare_kvasir_splits,
+    write_split_summary,
 )
 
 __all__ = [
-    "prepare_kvasir_splits",
-    "prepare_ibs_patient_folds",
-    "write_split_summary",
+    "GroupIdError",
+    "deduplicate_across_splits",
+    "diagnose_ibs_grouping",
     "extract_group_id",
+    "load_group_map",
+    "prepare_ibs_patient_folds",
+    "prepare_kvasir_splits",
+    "write_split_summary",
 ]

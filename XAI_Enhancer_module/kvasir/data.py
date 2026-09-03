@@ -1,5 +1,5 @@
 """
-Kvasir-v2 dataset: load, split (80:20), and download utilities.
+Kvasir-v2 dataset: load, split (70/10/20 train/val/test), and download utilities.
 Uses ImageNet mean/std normalization and ImageNet-style resize + crop as agreed.
 """
 
@@ -7,6 +7,7 @@ import os
 import random
 import threading
 import time
+import warnings
 import zipfile
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -86,15 +87,17 @@ def _find_image_paths(root: Path, extensions: Tuple[str, ...] = (".jpg", ".jpeg"
     return out
 
 
-def prepare_splits(
+def prepare_splits_train_val_deprecated(
     data_root: str,
     val_ratio: float = 0.2,
     seed: int = 42,
     splits_dir: Optional[str] = None,
 ) -> Tuple[Path, Path]:
     """
-    Create 80:20 stratified train/val split files under data_root/splits.
-    Returns paths to train.txt and val.txt (each line: relative_path label_index).
+    Deprecated 80:20 stratified train/val split (no held-out test).
+
+    Kept so old logs remain interpretable. New runs should use prepare_splits()
+    (70/10/20). Reviewer R3-1 / R3-2.
     """
     data_root = Path(data_root)
     if splits_dir is None:
@@ -107,7 +110,6 @@ def prepare_splits(
     if not pairs:
         raise FileNotFoundError(f"No images found under {data_root} (expected class folders: {KVASIR_CLASSES})")
 
-    # Stratified split per class
     rng = random.Random(seed)
     train_pairs: List[Tuple[Path, int]] = []
     val_pairs: List[Tuple[Path, int]] = []
@@ -131,6 +133,45 @@ def prepare_splits(
             f.write(f"{rel(p)}\t{lbl}\n")
 
     return train_file, val_file
+
+
+def prepare_splits(
+    data_root: str,
+    val_ratio: float = 0.1,
+    seed: int = 42,
+    splits_dir: Optional[str] = None,
+    train_ratio: float = 0.7,
+    test_ratio: float = 0.2,
+) -> Tuple[Path, Path, Path]:
+    """
+    Create stratified train/val/test split files (default 70/10/20).
+
+    Returns paths to train.txt, val.txt, and test.txt.
+    If ratios do not sum to 1.0 (old 80:20 callers), falls back to the
+    deprecated train/val-only split.
+    """
+    from XAI_Enhancer_module.common.splits import prepare_kvasir_splits
+
+    if abs(train_ratio + val_ratio + test_ratio - 1.0) > 1e-6:
+        warnings.warn(
+            "Kvasir prepare_splits ratios do not sum to 1.0; "
+            "falling back to deprecated 80:20 train/val (no test).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        train_f, val_f = prepare_splits_train_val_deprecated(
+            data_root, val_ratio=val_ratio, seed=seed, splits_dir=splits_dir,
+        )
+        return train_f, val_f, Path(splits_dir or Path(data_root) / "splits") / "test.txt"
+
+    return prepare_kvasir_splits(
+        data_root,
+        train_ratio=train_ratio,
+        val_ratio=val_ratio,
+        test_ratio=test_ratio,
+        seed=seed,
+        splits_dir=splits_dir,
+    )
 
 
 def load_split_file(split_path: Path, data_root: Path) -> List[Tuple[Path, int]]:
@@ -175,7 +216,8 @@ class KvasirDataset(Dataset):
         split_file = splits_dir / f"{split}.txt"
         if not split_file.exists():
             raise FileNotFoundError(
-                f"Split file not found: {split_file}. Run prepare_splits() first."
+                f"Split file not found: {split_file}. "
+                "Run prepare_splits() (70/10/20 train/val/test) first."
             )
         self.samples = load_split_file(split_file, self.data_root)
 
