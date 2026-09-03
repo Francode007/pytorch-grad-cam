@@ -80,6 +80,8 @@ write_split_summary(str(root), dataset='kvasir')
 python -m XAI_Enhancer_module.kvasir.train --arch resnet18 --epochs 2 --data-root data/kvasir-v2 --seed 42
 ```
 
+**Cloud (Modal):** branch `modal_kvasir` — follow `modal_runner/README.md` (`modal setup`, then `modal run -m modal_runner.app -- download-models` / `download-kvasir`).
+
 ## 5. What not to put in this folder
 
 - Trained checkpoints, large datasets, or wandb logs (use `runs/` and `.gitignore`).

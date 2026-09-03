@@ -1,6 +1,7 @@
-# Reproducing CMPB revision experiments (branch `kvasir_v2`)
+# Reproducing CMPB revision experiments
 
-Planning documents: `../cmpb_revision/` (repository root).
+- Planning: `../cmpb_revision/` (repository root).
+- **Cloud (Modal):** branch `modal_kvasir` — see [`../modal_runner/README.md`](../modal_runner/README.md).
 
 ## Splits (Phase 1, R3-1)
 
@@ -27,6 +28,14 @@ after 414 near-duplicate reassignments (979 pairs). Summaries:
 
 ```bash
 python -m XAI_Enhancer_module.kvasir.train --arch resnet50 --data-root data/kvasir-v2 --seed 42
+```
+
+### On Modal (after `modal setup`)
+
+```bash
+modal run -m modal_runner.app -- download-models
+modal run -m modal_runner.app -- download-kvasir
+modal run -m modal_runner.app -- train-kvasir --arch resnet50 --smoke
 ```
 
 See `cmpb_revision/09-coding-roadmap.md` for the full pipeline.
