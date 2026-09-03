@@ -1,6 +1,11 @@
 """Job package for Modal-hosted XAI-Enhancer pipeline steps."""
 
-from modal_runner.jobs.download import download_ibs, download_kvasir, download_models
+from modal_runner.jobs.download import (
+    download_ibs,
+    download_kvasir,
+    download_models,
+    ingest_ibs_zip,
+)
 from modal_runner.jobs.evaluate import (
     eval_ibs_cams,
     eval_ibs_classification,
@@ -19,6 +24,7 @@ __all__ = [
     "download_ibs",
     "download_kvasir",
     "download_models",
+    "ingest_ibs_zip",
     "eval_ibs_cams",
     "eval_ibs_classification",
     "eval_kvasir_cams",

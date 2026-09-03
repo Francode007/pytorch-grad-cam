@@ -139,6 +139,18 @@ modal run -m modal_runner.app -- prepare-kvasir-splits --no-dedupe
 modal run -m modal_runner.app -- download-ibs
 ```
 
+If Kaggle returns **403 Forbidden**, either accept the dataset terms in the browser
+(same account as the Modal secret), or **upload your local zip** (recommended if you
+already have `data/IBS-preprocessed-dataset.zip`):
+
+```bash
+# ~1.9 GB upload — run from the repo root
+modal volume put xai-enhancer-vol data/IBS-preprocessed-dataset.zip \
+  /data/IBS-preprocessed-dataset.zip
+
+modal run -m modal_runner.app -- ingest-ibs-zip
+```
+
 Patient-level folds still need a groups CSV (see Phase 1 / D-M4). After you have one:
 
 ```bash

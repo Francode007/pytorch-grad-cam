@@ -56,11 +56,15 @@ def ensure_kaggle_credentials() -> None:
             "KAGGLE_USERNAME=... KAGGLE_KEY=...\n"
             "See modal_runner/README.md."
         )
+    # Also export for libraries that read env vars directly.
+    os.environ["KAGGLE_USERNAME"] = user
+    os.environ["KAGGLE_KEY"] = key
     kaggle_dir = Path.home() / ".kaggle"
     kaggle_dir.mkdir(parents=True, exist_ok=True)
     cred_path = kaggle_dir / "kaggle.json"
     cred_path.write_text(json.dumps({"username": user, "key": key}))
     cred_path.chmod(0o600)
+    print(f"Kaggle credentials loaded for user={user!r}", flush=True)
 
 
 def run_module(module: str, args: Sequence[str], *, cwd: Optional[Path] = None) -> None:

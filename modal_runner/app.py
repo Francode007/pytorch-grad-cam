@@ -86,6 +86,23 @@ def download_ibs(skip_if_present: bool = True, source: str = "kaggle") -> str:
     volumes=_VOLUMES,
     timeout=TIMEOUT_DOWNLOAD_S,
     cpu=4.0,
+    memory=16384,
+    ephemeral_disk=1024 * 100,  # ~100 GiB scratch for unzip
+)
+def ingest_ibs_zip(zip_path: str = "") -> str:
+    """Extract IBS from a zip already on the volume (bypass Kaggle)."""
+    from modal_runner.jobs.download import ingest_ibs_zip as _job
+
+    msg = _job(zip_path=zip_path or None)
+    _commit()
+    return msg
+
+
+@app.function(
+    image=image,
+    volumes=_VOLUMES,
+    timeout=TIMEOUT_DOWNLOAD_S,
+    cpu=4.0,
     memory=8192,
 )
 def download_models() -> str:
@@ -346,6 +363,16 @@ def _build_parser() -> argparse.ArgumentParser:
     di.add_argument("--force", action="store_true")
     di.add_argument("--source", default="kaggle", choices=("kaggle", "zip", "manual"))
 
+    iiz = sub.add_parser(
+        "ingest-ibs-zip",
+        help="Extract IBS from /vol/data/IBS-preprocessed-dataset.zip (bypass Kaggle 403)",
+    )
+    iiz.add_argument(
+        "--zip-path",
+        default="",
+        help="Zip path on the volume (default: /vol/data/IBS-preprocessed-dataset.zip)",
+    )
+
     pk = sub.add_parser("prepare-kvasir-splits", help="Write 70/10/20 (+ optional pHash dedupe)")
     pk.add_argument("--seed", type=int, default=42)
     pk.add_argument("--no-dedupe", action="store_true")
@@ -434,6 +461,8 @@ def main(*cli_args: str) -> None:
         print(download_kvasir.remote(skip_if_present=not args.force, source=args.source))
     elif action == "download-ibs":
         print(download_ibs.remote(skip_if_present=not args.force, source=args.source))
+    elif action == "ingest-ibs-zip":
+        print(ingest_ibs_zip.remote(zip_path=args.zip_path))
     elif action == "prepare-kvasir-splits":
         print(prepare_kvasir_splits.remote(dedupe=not args.no_dedupe, seed=args.seed))
     elif action == "prepare-ibs-folds":
