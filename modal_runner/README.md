@@ -13,8 +13,13 @@ modal_runner/
     ├── download.py  # Kvasir / IBS / torchvision weights
     ├── splits.py    # 70/10/20 + IBS folds + smoke
     ├── train.py     # classifier training
+    ├── summarize.py # wave cost/metrics tables + batch locks
+    ├── reset.py     # wipe seed dirs / locks
     └── evaluate.py  # classification + CAM metrics
 ```
+
+**Phase 2 operator runbook** (launch / logs / resume while experiments run):
+[`../XAI_Enhancer_module/PHASE2_RUNBOOK.md`](../XAI_Enhancer_module/PHASE2_RUNBOOK.md)
 
 Persistent storage is a single Modal Volume (`xai-enhancer-vol`) mounted at `/vol`:
 
@@ -244,12 +249,44 @@ modal run -m modal_runner.app -- eval-kvasir-cams --arch resnet50 --max-images 5
 modal run -m modal_runner.app -- eval-kvasir-cams --arch resnet50   # full test set
 ```
 
-### IBS (once data + splits exist)
+### IBS revision matrix (5 A100s × one fold; repeat 1–4)
+
+Architectures match Kvasir: `resnet18`, `resnet34`, `resnet50`, `vgg19`, `vgg16`.
 
 ```bash
-modal run -m modal_runner.app -- train-ibs --arch resnet50 --smoke
-modal run -m modal_runner.app -- eval-ibs-cls --arch resnet50
-modal run -m modal_runner.app -- eval-ibs-cams --arch resnet50 --max-images 50
+modal run --detach -m modal_runner.app -- train-ibs-fold --fold 0
+# After fold 0 (locks batch sizes):
+modal run --detach -m modal_runner.app -- train-ibs-fold --fold 1
+# ... folds 2, 3, 4
+
+# Or all 25 cells in one map (queues at GPU concurrency limit)
+modal run --detach -m modal_runner.app -- train-ibs-cv
+```
+
+Wave summaries + locks:
+
+```
+/vol/runs/ibs/waves/fold{k}/wave_summary.{json,txt}
+/vol/runs/ibs/locked_batch_sizes.json
+```
+
+```bash
+modal run -m modal_runner.app -- summarize-ibs-fold --fold 0
+modal volume get xai-enhancer-vol /runs/ibs/waves/fold0 ./modal_artifacts/ibs_waves/fold0
+```
+
+Resume one cell:
+
+```bash
+modal run --detach -m modal_runner.app -- \
+  train-ibs --arch vgg19 --fold 0 --resume auto
+```
+
+Eval (after `best.pth` exists):
+
+```bash
+modal run -m modal_runner.app -- eval-ibs-cls --arch resnet50 --fold 0 --split test
+modal run -m modal_runner.app -- eval-ibs-cams --arch resnet50 --fold 0 --max-images 50
 ```
 
 ---
@@ -257,8 +294,9 @@ modal run -m modal_runner.app -- eval-ibs-cams --arch resnet50 --max-images 50
 ## 4. Pull results back to your laptop
 
 ```bash
-# Checkpoints
+# Kvasir / IBS runs (logs, ckpts, wave summaries)
 modal volume get xai-enhancer-vol /runs/kvasir ./modal_artifacts/runs/kvasir
+modal volume get xai-enhancer-vol /runs/ibs ./modal_artifacts/runs/ibs
 
 # Split summary CSV
 modal volume get xai-enhancer-vol /data/kvasir-v2/splits/split_summary_kvasir.csv \
@@ -286,5 +324,8 @@ modal volume get xai-enhancer-vol /data/kvasir-v2/splits/split_summary_kvasir.cs
 | `Cannot infer patient/exam id` on IBS folds | Provide `--groups-csv` (Phase 1 finding) |
 | Out of memory on CAM eval | Lower `--max-images`, or edit `jobs/evaluate.py` batch sizes |
 | Stale code in container | Re-run from repo root; confirm you are on `modal_kvasir` |
+| Wave cancelled after Mac logout | Use `--detach` on current branch (`.spawn()`, not waiting `.remote()`) |
+| Need training stdout | Volume `train.log` or Modal dashboard container logs |
 
-Dashboard logs: [https://modal.com/apps](https://modal.com/apps) → app `xai-enhancer`.
+Dashboard: [https://modal.com/apps](https://modal.com/apps) → app `xai-enhancer`.  
+More Phase 2 ops: [`PHASE2_RUNBOOK.md`](../XAI_Enhancer_module/PHASE2_RUNBOOK.md).

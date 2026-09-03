@@ -128,9 +128,8 @@ summary has `n_patients_*` columns (see D-M4).
 
 ```bash
 # 2 epochs on A100 — verifies data loaders + volume writes
-modal run -m modal_runner.app -- train-kvasir --arch resnet18 --smoke
-# IBS smoke still uses deprecated image-level split until Phase 2 --fold lands:
-# modal run -m modal_runner.app -- train-ibs --arch resnet18 --smoke
+modal run -m modal_runner.app -- train-kvasir --arch resnet18 --seed 42 --smoke
+modal run -m modal_runner.app -- train-ibs --arch resnet18 --fold 0 --smoke
 ```
 
 ---
@@ -139,52 +138,57 @@ modal run -m modal_runner.app -- train-kvasir --arch resnet18 --smoke
 
 **Goal:** 5 archs × 3 seeds (Kvasir) and 5 archs × 5 folds (IBS); best ckpt by **val macro-F1**; test AUROC/F1/ECE.
 
-**Status:** code landed on `modal_kvasir` — launch GPU matrix next.
+**Status:** **in progress on Modal** — parallel A100 waves (`--detach` + spawn).  
+**Arch set:** `resnet18`, `resnet34`, `resnet50`, `vgg19`, `vgg16` (VGG19 replaces DenseNet121).
 
-**Codebase map (matrices, run dirs, eval):** [`PHASE2_CODEBASE.md`](PHASE2_CODEBASE.md)
+**Day-to-day operator guide (launch / logs / resume):** [`PHASE2_RUNBOOK.md`](PHASE2_RUNBOOK.md)  
+**Codebase map (matrices, cost, call graph):** [`PHASE2_CODEBASE.md`](PHASE2_CODEBASE.md)
 
 ### Code (landed)
 
 | Piece | Path | Notes |
 |-------|------|--------|
-| Seed/fold-aware train | `kvasir/train.py`, `ibs/train.py` | Kvasir `--seed`; IBS `--fold`; val **macro-F1** ckpt; `args.json` |
-| Classifier metrics | `kvasir/eval_classification.py`, `ibs/eval_classification.py` | AUROC, F1, ECE, per-class; default `--split test` |
-| Matrix orchestrator | `common/train_matrix.py` | local 5×3 / 5×5 loops |
-| Modal wiring | `modal_runner/jobs/train.py`, `app.py` | `train-kvasir-seed`, `train-ibs-fold`, `train-ibs-cv` |
+| Seed/fold-aware train | `kvasir/train.py`, `ibs/train.py` | val **macro-F1**; auto-batch; `train.log`; mid/latest resume |
+| Classifier metrics | `*/eval_classification.py` | AUROC, F1, ECE; default `--split test` |
+| Wave summarize | `modal_runner/jobs/summarize.py` | cost table + lock `locked_batch_sizes.json` |
+| Modal wiring | `modal_runner/app.py` | `train-kvasir-seed`, `train-ibs-fold`, `train-ibs-cv` via `.spawn()` |
 
 ### Modal commands
 
 ```bash
-# Smoke (2 epochs)
-modal run -m modal_runner.app -- train-kvasir --arch resnet18 --seed 42 --smoke
-modal run -m modal_runner.app -- train-ibs --arch resnet18 --fold 0 --smoke
-
-# Single full run (detach via spawn)
-modal run --detach -m modal_runner.app -- train-kvasir --arch resnet50 --seed 42 --epochs 50
-modal run --detach -m modal_runner.app -- train-ibs --arch resnet50 --fold 0 --epochs 50
+# Always --detach for long jobs (spawn survives Mac logout)
 
 # Kvasir: 5 parallel A100s per seed
 modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 42
+modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 43
+modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 44
 
-# IBS: 5 parallel A100s per fold (vgg19 not densenet121)
+# IBS: 5 parallel A100s per fold (lock batches on fold 0)
 modal run --detach -m modal_runner.app -- train-ibs-fold --fold 0
 modal run --detach -m modal_runner.app -- train-ibs-fold --fold 1
-modal run --detach -m modal_runner.app -- train-ibs-fold --fold 2
-modal run --detach -m modal_runner.app -- train-ibs-fold --fold 3
-modal run --detach -m modal_runner.app -- train-ibs-fold --fold 4
+# ... folds 2, 3, 4
 
-# Or all 25 (5 arches × 5 folds) in one detached map
+# Or all 25 IBS cells (queues past concurrency limit)
 modal run --detach -m modal_runner.app -- train-ibs-cv
+
+# Inspect a finished wave
+modal run -m modal_runner.app -- summarize-kvasir-seed --seed 42
+modal run -m modal_runner.app -- summarize-ibs-fold --fold 0
 ```
 
 **Target layout on volume:**
 
 ```
-/vol/runs/kvasir/{arch}/seed{42,43,44}/best.pth
-/vol/runs/ibs/{arch}/fold{0..4}/best.pth
+/vol/runs/kvasir/{arch}/seed{42,43,44}/{train.log,args.json,metrics.json,best.pth,...}
+/vol/runs/kvasir/waves/seed{S}/wave_summary.{json,txt}
+/vol/runs/kvasir/locked_batch_sizes.json
+
+/vol/runs/ibs/{arch}/fold{0..4}/{train.log,args.json,metrics.json,best.pth,...}
+/vol/runs/ibs/waves/fold{k}/wave_summary.{json,txt}
+/vol/runs/ibs/locked_batch_sizes.json
 ```
 
-**Acceptance:** JSON metrics per run; mean ± SD across seeds/folds printable.
+**Acceptance:** JSON metrics per run; mean ± SD across seeds/folds printable; wave summaries on volume.
 
 ---
 

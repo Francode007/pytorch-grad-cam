@@ -24,8 +24,26 @@ See [`ibs/metadata/README.md`](ibs/metadata/README.md). The numeric
 
 ## Training (Phase 2)
 
-Deep dive (what each matrix cell is, call graph, overrides):
-[`PHASE2_CODEBASE.md`](PHASE2_CODEBASE.md).
+**Operator runbook (Modal parallel waves, logs, resume):** [`PHASE2_RUNBOOK.md`](PHASE2_RUNBOOK.md)  
+**Deep dive (matrices, call graph, cost):** [`PHASE2_CODEBASE.md`](PHASE2_CODEBASE.md)
+
+Architectures: `resnet18`, `resnet34`, `resnet50`, `vgg19`, `vgg16`.
+
+### Modal (recommended)
+
+```bash
+# Kvasir — 5 A100s × one seed (repeat 43, 44)
+modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 42
+
+# IBS — 5 A100s × one fold (repeat 1–4); or train-ibs-cv for all 25
+modal run --detach -m modal_runner.app -- train-ibs-fold --fold 0
+
+# Inspect wave summaries
+modal run -m modal_runner.app -- summarize-kvasir-seed --seed 42
+modal run -m modal_runner.app -- summarize-ibs-fold --fold 0
+```
+
+### Local (single cell / matrix loop)
 
 ```bash
 # Kvasir — one seed (best ckpt by val macro-F1 → runs/kvasir/{arch}/seed{seed}/)
@@ -34,7 +52,7 @@ python -m XAI_Enhancer_module.kvasir.train --arch resnet50 --data-root data/kvas
 # IBS — one patient fold
 python -m XAI_Enhancer_module.ibs.train --arch resnet50 --data-root data/IBS-patient-dataset --fold 0
 
-# Full matrices
+# Full matrices (sequential local)
 python -m XAI_Enhancer_module.common.train_matrix --dataset both --epochs 50
 
 # Test-set classifier metrics
