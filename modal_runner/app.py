@@ -728,37 +728,57 @@ def main(*cli_args: str) -> None:
     elif action == "smoke-splits":
         print(smoke_splits.remote(dedupe=args.dedupe))
     elif action == "train-kvasir":
-        print(
-            train_kvasir.remote(
-                arch=args.arch,
-                seed=args.seed,
-                epochs=args.epochs,
-                batch_size=args.batch_size,
-                smoke=args.smoke,
-                resume=args.resume,
-                auto_batch=not args.no_auto_batch,
-            )
+        import sys
+
+        detached = ("--detach" in sys.argv) or ("-d" in sys.argv)
+        call = train_kvasir.spawn(
+            arch=args.arch,
+            seed=args.seed,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            smoke=args.smoke,
+            resume=args.resume,
+            auto_batch=not args.no_auto_batch,
         )
+        print(f"FunctionCall id: {call.object_id}", flush=True)
+        if detached:
+            print("Detached spawn submitted — safe to close the laptop.", flush=True)
+            return
+        print(call.get())
     elif action == "train-kvasir-seed":
-        # Single remote orchestrator so --detach keeps the whole wave (map+summary).
+        # Spawn (don't .remote) so --detach survives laptop sleep/logout.
+        # .remote() keeps the local client attached; disconnect cancels the
+        # orchestrator and all unfinished child GPUs (what happened on seed 42).
+        import sys
+
         archs = list(args.archs) if args.archs else list(KVASIR_ARCHS)
+        detached = ("--detach" in sys.argv) or ("-d" in sys.argv)
         print(
-            f"Dispatching train_kvasir_seed_wave seed={args.seed} archs={archs} "
-            f"reset={args.reset} (detach-safe single remote)",
+            f"Spawning train_kvasir_seed_wave seed={args.seed} archs={archs} "
+            f"reset={args.reset} detached={detached}",
             flush=True,
         )
-        print(
-            train_kvasir_seed_wave.remote(
-                seed=args.seed,
-                archs=archs,
-                epochs=args.epochs,
-                batch_size=args.batch_size,
-                smoke=args.smoke,
-                resume=args.resume,
-                auto_batch=not args.no_auto_batch,
-                reset=args.reset,
-            )
+        call = train_kvasir_seed_wave.spawn(
+            seed=args.seed,
+            archs=archs,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            smoke=args.smoke,
+            resume=args.resume,
+            auto_batch=not args.no_auto_batch,
+            reset=args.reset,
         )
+        print(f"FunctionCall id: {call.object_id}", flush=True)
+        print("Monitor: https://modal.com/apps", flush=True)
+        if detached:
+            print(
+                "Detached spawn submitted — safe to close the laptop. "
+                "Do NOT Ctrl+C this process if it is still exiting; "
+                "the wave continues on Modal either way.",
+                flush=True,
+            )
+            return
+        print(call.get())
     elif action == "reset-kvasir-seed":
         print(
             reset_kvasir_seed.remote(
