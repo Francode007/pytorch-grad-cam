@@ -44,7 +44,7 @@ modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 44
 | Axis | Values | Defined in |
 |------|--------|------------|
 | Architectures (Kvasir) | `resnet18`, `resnet34`, `resnet50`, `vgg19`, `vgg16` | `config.KVASIR_ARCHS` |
-| Architectures (IBS) | `resnet18`, `resnet34`, `resnet50`, `densenet121`, `vgg16` | `config.IBS_ARCHS` |
+| Architectures (IBS) | same as Kvasir | `config.IBS_ARCHS` |
 | Kvasir seeds | `42`, `43`, `44` | `config.KVASIR_SEEDS`; pass one at a time via `--seed` |
 | IBS folds | `0`, `1`, `2`, `3`, `4` | Patient CV from Phase 1B |
 | IBS RNG seed | `42` (fixed; fold identity comes from `--fold`) | `ibs/train.py --seed` |
@@ -145,10 +145,18 @@ last.pth           # final epoch
 
 ## 3. Full expansion — IBS matrix (25 runs)
 
-Command:
+Preferred (same pattern as Kvasir seeds): one fold = 5 A100s, then repeat folds 1–4.
 
 ```bash
-modal run -m modal_runner.app -- train-ibs-matrix --epochs 50
+modal run --detach -m modal_runner.app -- train-ibs-fold --fold 0
+modal run --detach -m modal_runner.app -- train-ibs-fold --fold 1
+# ... folds 2, 3, 4
+```
+
+Or all 25 cells in one map (jobs beyond your GPU concurrency queue):
+
+```bash
+modal run --detach -m modal_runner.app -- train-ibs-cv
 ```
 
 Each cell invokes:
@@ -166,7 +174,7 @@ python -m XAI_Enhancer_module.ibs.train \
 | 1–5 | resnet18 | 0…4 | `splits/fold{k}/{train,val,test}.txt` | `/vol/runs/ibs/resnet18/fold{k}/` |
 | 6–10 | resnet34 | 0…4 | same | `/vol/runs/ibs/resnet34/fold{k}/` |
 | 11–15 | resnet50 | 0…4 | same | `/vol/runs/ibs/resnet50/fold{k}/` |
-| 16–20 | densenet121 | 0…4 | same | `/vol/runs/ibs/densenet121/fold{k}/` |
+| 16–20 | vgg19 | 0…4 | same | `/vol/runs/ibs/vgg19/fold{k}/` |
 | 21–25 | vgg16 | 0…4 | same | `/vol/runs/ibs/vgg16/fold{k}/` |
 
 **Data:** Phase 1B patient-disjoint folds (`StratifiedGroupKFold`, 126 exam groups).  

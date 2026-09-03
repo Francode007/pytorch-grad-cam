@@ -60,14 +60,16 @@ TIMEOUT_EVAL_S = 12 * 60 * 60
 # Architectures used in the revision matrix
 # Kvasir: vgg19 in place of densenet121 (seed 42/43 densenet runs are leftover, not in matrix)
 KVASIR_ARCHS = ("resnet18", "resnet34", "resnet50", "vgg19", "vgg16")
-# IBS still uses densenet121 until that matrix is re-run
-IBS_ARCHS = ("resnet18", "resnet34", "resnet50", "densenet121", "vgg16")
+IBS_ARCHS = KVASIR_ARCHS
+IBS_FOLDS = (0, 1, 2, 3, 4)
 
 # Seeds for the full Kvasir matrix (run one seed at a time via train-kvasir-seed)
 KVASIR_SEEDS = (42, 43, 44)
 
-# batch_size=0 in jobs → train.py auto-batch (target ~82% VRAM) or A100 defaults
+# batch_size=0 → train.py auto-batch
 KVASIR_BATCH_SIZE_DEFAULT = 0
+IBS_BATCH_SIZE_DEFAULT = 0
+TIMEOUT_IBS_CV_S = 16 * 60 * 60  # 5×5 map may queue under GPU concurrency limits
 
 # Local files / dirs that must not be uploaded into the Modal image mount
 LOCAL_IGNORE = [

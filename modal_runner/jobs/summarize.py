@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from modal_runner.config import KVASIR_ARCHS, KVASIR_RUNS, VOLUME_NAME
+from modal_runner.config import IBS_ARCHS, IBS_RUNS, KVASIR_ARCHS, KVASIR_RUNS, VOLUME_NAME
 
 # Modal A100 40GB list price used for rough post-wave estimates (see PHASE2_CODEBASE.md)
 A100_USD_PER_HOUR = 2.10
@@ -284,5 +284,106 @@ def summarize_kvasir_seed(
         f"Wave summary saved → {wave_dir}/wave_summary.{{json,txt}} + wave.log; "
         f"locked batches → {lock_path}"
     )
+    print(msg, flush=True)
+    return table + "\n" + msg
+
+
+def collect_ibs_fold_rows(
+    fold: int,
+    *,
+    archs: Optional[Sequence[str]] = None,
+    runs_root: Path | None = None,
+) -> List[Dict[str, Any]]:
+    """Same status logic as Kvasir, under {arch}/fold{fold}/."""
+    root = runs_root or IBS_RUNS
+    chosen = list(archs) if archs else list(IBS_ARCHS)
+    rows: List[Dict[str, Any]] = []
+    for arch in chosen:
+        run_dir = root / arch / f"fold{fold}"
+        metrics_path = run_dir / "metrics.json"
+        args_path = run_dir / "args.json"
+        row: Dict[str, Any] = {
+            "arch": arch,
+            "fold": fold,
+            "run_dir": str(run_dir),
+            "status": "missing",
+        }
+        if args_path.exists():
+            try:
+                args = _read_json(args_path)
+                row["batch_size"] = args.get("batch_size_resolved", args.get("batch_size"))
+                row["batch_size_source"] = args.get("batch_size_source")
+                row["batch_size_locked"] = args.get("batch_size_locked")
+                row["epochs_planned"] = args.get("epochs")
+                row["status"] = "started"
+            except Exception as e:
+                row["args_error"] = str(e)
+        if metrics_path.exists():
+            try:
+                metrics = _read_json(metrics_path)
+                if isinstance(metrics, list) and metrics:
+                    row.update(_best_from_metrics(metrics))
+                    planned = int(row.get("epochs_planned") or 0)
+                    done = int(row.get("epochs_done") or 0)
+                    if planned and done >= planned and (run_dir / "last.pth").exists():
+                        row["status"] = "ok"
+                    elif done > 0 and (run_dir / "checkpoint_latest.pth").exists():
+                        row["status"] = "partial"
+                    elif done > 0:
+                        row["status"] = "stale_metrics"
+                    else:
+                        row["status"] = "empty_metrics"
+                else:
+                    row["status"] = "bad_metrics"
+            except Exception as e:
+                row["status"] = "metrics_error"
+                row["metrics_error"] = str(e)
+        elif row.get("status") == "started":
+            row["status"] = "crashed"
+        rows.append(row)
+    return rows
+
+
+def summarize_ibs_fold(
+    *,
+    fold: int,
+    archs: Optional[Sequence[str]] = None,
+    runs_root: Path | None = None,
+    train_results: Optional[Sequence[str]] = None,
+) -> str:
+    root = runs_root or IBS_RUNS
+    rows = collect_ibs_fold_rows(fold, archs=archs, runs_root=root)
+    table = format_summary_table(rows, seed=fold, runs_root=root).replace(
+        f"Kvasir wave summary — seed={fold}",
+        f"IBS fold wave summary — fold={fold}",
+    )
+    print(table, flush=True)
+    locked: Dict[str, int] = {}
+    for r in rows:
+        bs = r.get("batch_size")
+        if r.get("arch") and isinstance(bs, (int, float)) and int(bs) > 0:
+            locked[str(r["arch"])] = int(bs)
+    lock_path = save_locked_batches(locked, runs_root=root, source_seed=fold, merge=True)
+    wave_dir = root / "waves" / f"fold{fold}"
+    wave_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "fold": fold,
+        "generated_utc": datetime.now(timezone.utc).isoformat(),
+        "volume": VOLUME_NAME,
+        "rows": rows,
+        "locked_batch_sizes": locked,
+        "locked_batch_file": str(lock_path),
+        "train_results": list(train_results) if train_results else [],
+    }
+    (wave_dir / "wave_summary.json").write_text(json.dumps(payload, indent=2) + "\n")
+    (wave_dir / "wave_summary.txt").write_text(table)
+    with (wave_dir / "wave.log").open("a") as f:
+        f.write(f"\n===== fold{fold} complete {payload['generated_utc']} =====\n")
+        f.write(table)
+        if train_results:
+            f.write("\ntrain_results:\n")
+            for line in train_results:
+                f.write(f"  {line}\n")
+    msg = f"IBS fold summary saved → {wave_dir}; locked batches → {lock_path}"
     print(msg, flush=True)
     return table + "\n" + msg

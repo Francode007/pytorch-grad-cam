@@ -7,6 +7,7 @@ from typing import List, Optional, Sequence
 
 from modal_runner.config import (
     IBS_ARCHS,
+    IBS_BATCH_SIZE_DEFAULT,
     IBS_ROOT,
     IBS_RUNS,
     KVASIR_ARCHS,
@@ -129,11 +130,13 @@ def train_ibs(
     fold: int = 0,
     seed: int = 42,
     epochs: int = 50,
-    batch_size: int = 128,
+    batch_size: int = IBS_BATCH_SIZE_DEFAULT,
     amp: bool = True,
     amp_dtype: str = "bfloat16",
     compile_model: bool = True,
     output_dir: Optional[str] = None,
+    resume: str = "",
+    auto_batch: bool = True,
     extra_args: Optional[Sequence[str]] = None,
 ) -> str:
     """Train one IBS fold → /vol/runs/ibs/{arch}/fold{fold}/."""
@@ -154,8 +157,10 @@ def train_ibs(
         amp_dtype=amp_dtype,
         compile_model=compile_model,
         fold=fold,
-        auto_batch=False,
-        a100=False,
+        resume=resume,
+        auto_batch=auto_batch,
+        a100=True,
+        locked_batch_file=str(Path(out) / "locked_batch_sizes.json"),
     )
     if extra_args:
         args.extend(extra_args)
@@ -169,9 +174,9 @@ def train_ibs_matrix(
     folds: Optional[Sequence[int]] = None,
     seed: int = 42,
     epochs: int = 50,
-    batch_size: int = 128,
+    batch_size: int = IBS_BATCH_SIZE_DEFAULT,
 ) -> str:
-    """Train IBS arches × folds sequentially."""
+    """Train IBS arches × folds sequentially (legacy; prefer train-ibs-fold / train-ibs-cv)."""
     chosen = list(archs) if archs else list(IBS_ARCHS)
     fold_list = list(folds) if folds else [0, 1, 2, 3, 4]
     lines = []

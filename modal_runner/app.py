@@ -18,10 +18,13 @@ import modal
 from modal_runner.config import (
     APP_NAME,
     GPU_TRAIN,
+    IBS_ARCHS,
+    IBS_FOLDS,
     KVASIR_ARCHS,
     SECRET_KAGGLE,
     TIMEOUT_DOWNLOAD_S,
     TIMEOUT_EVAL_S,
+    TIMEOUT_IBS_CV_S,
     TIMEOUT_TRAIN_S,
     VOL_ROOT,
     VOLUME_NAME,
@@ -206,6 +209,21 @@ def summarize_kvasir_seed(
 
 
 @app.function(image=image, volumes=_VOLUMES, timeout=600, cpu=1.0, memory=2048)
+def summarize_ibs_fold(
+    fold: int = 0,
+    archs: Optional[List[str]] = None,
+    train_results: Optional[List[str]] = None,
+) -> str:
+    from modal_runner.jobs.summarize import summarize_ibs_fold as _job
+
+    ensure_layout()
+    volume.reload()
+    msg = _job(fold=fold, archs=archs, train_results=train_results)
+    _commit()
+    return msg
+
+
+@app.function(image=image, volumes=_VOLUMES, timeout=600, cpu=1.0, memory=2048)
 def reset_kvasir_seed(
     seed: int = 42,
     archs: Optional[List[str]] = None,
@@ -305,6 +323,129 @@ def train_kvasir_seed_wave(
     return "\n".join(lines)
 
 
+@app.function(
+    image=image,
+    volumes=_VOLUMES,
+    timeout=TIMEOUT_TRAIN_S,
+    cpu=2.0,
+    memory=4096,
+)
+def train_ibs_fold_wave(
+    fold: int = 0,
+    archs: Optional[List[str]] = None,
+    seed: int = 42,
+    epochs: int = 50,
+    batch_size: int = 0,
+    smoke: bool = False,
+    resume: str = "",
+    auto_batch: bool = True,
+) -> str:
+    """5 A100s in parallel: all IBS arches for one patient fold."""
+    chosen = list(archs) if archs else list(IBS_ARCHS)
+    lines: List[str] = [f"train_ibs_fold_wave fold={fold} archs={chosen}"]
+    results = list(
+        train_ibs.map(
+            chosen,
+            kwargs={
+                "fold": fold,
+                "seed": seed,
+                "epochs": epochs,
+                "batch_size": batch_size,
+                "smoke": smoke,
+                "resume": resume,
+                "auto_batch": auto_batch,
+            },
+            order_outputs=True,
+            return_exceptions=True,
+            wrap_returned_exceptions=False,
+        )
+    )
+    train_lines: List[str] = []
+    for arch, res in zip(chosen, results):
+        if isinstance(res, BaseException):
+            line = f"FAIL  arch={arch} fold={fold}: {res}"
+        else:
+            line = f"OK    {res}"
+        print(line, flush=True)
+        train_lines.append(line)
+        lines.append(line)
+    from modal_runner.jobs.summarize import summarize_ibs_fold as _summarize
+
+    volume.reload()
+    summary = _summarize(fold=fold, archs=chosen, train_results=train_lines)
+    _commit()
+    lines.append(summary)
+    n_fail = sum(1 for r in results if isinstance(r, BaseException))
+    if n_fail:
+        raise RuntimeError(
+            f"{n_fail}/{len(chosen)} arch(s) failed for IBS fold={fold}. "
+            f"Resume: modal run --detach -m modal_runner.app -- "
+            f"train-ibs --arch <arch> --fold {fold} --resume auto"
+        )
+    return "\n".join(lines)
+
+
+@app.function(
+    image=image,
+    volumes=_VOLUMES,
+    timeout=TIMEOUT_IBS_CV_S,
+    cpu=2.0,
+    memory=4096,
+)
+def train_ibs_cv_wave(
+    archs: Optional[List[str]] = None,
+    folds: Optional[List[int]] = None,
+    seed: int = 42,
+    epochs: int = 50,
+    batch_size: int = 0,
+    smoke: bool = False,
+    resume: str = "",
+    auto_batch: bool = True,
+) -> str:
+    """
+    Full IBS matrix in one map: 5 arches × 5 folds (25 A100 jobs).
+    Extra jobs queue at the workspace GPU concurrency limit.
+    """
+    chosen = list(archs) if archs else list(IBS_ARCHS)
+    fold_list = list(folds) if folds else list(IBS_FOLDS)
+    pairs = [(arch, fold) for fold in fold_list for arch in chosen]
+    lines: List[str] = [f"train_ibs_cv_wave n={len(pairs)} archs={chosen} folds={fold_list}"]
+    results = list(
+        train_ibs.starmap(
+            pairs,
+            kwargs={
+                "seed": seed,
+                "epochs": epochs,
+                "batch_size": batch_size,
+                "smoke": smoke,
+                "resume": resume,
+                "auto_batch": auto_batch,
+            },
+            order_outputs=True,
+            return_exceptions=True,
+            wrap_returned_exceptions=False,
+        )
+    )
+    n_fail = 0
+    for (arch, fold), res in zip(pairs, results):
+        if isinstance(res, BaseException):
+            n_fail += 1
+            line = f"FAIL  arch={arch} fold={fold}: {res}"
+        else:
+            line = f"OK    {res}"
+        print(line, flush=True)
+        lines.append(line)
+    from modal_runner.jobs.summarize import summarize_ibs_fold as _summarize
+
+    volume.reload()
+    for fold in fold_list:
+        lines.append(_summarize(fold=fold, archs=chosen, train_results=None))
+    _commit()
+    if n_fail:
+        raise RuntimeError(f"{n_fail}/{len(pairs)} IBS CV cells failed. Resume per-arch with --resume auto.")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # GPU jobs — train / eval
 # ---------------------------------------------------------------------------
@@ -378,15 +519,26 @@ def train_ibs(
     fold: int = 0,
     seed: int = 42,
     epochs: int = 50,
-    batch_size: int = 128,
+    batch_size: int = 0,
     smoke: bool = False,
+    resume: str = "",
+    auto_batch: bool = True,
 ) -> str:
     from modal_runner.jobs.train import train_ibs as _job
 
     if smoke:
         epochs = min(epochs, 2)
-        batch_size = min(batch_size, 32)
-    msg = _job(arch=arch, fold=fold, seed=seed, epochs=epochs, batch_size=batch_size)
+        batch_size = 32 if batch_size <= 0 else min(batch_size, 32)
+        auto_batch = False
+    msg = _job(
+        arch=arch,
+        fold=fold,
+        seed=seed,
+        epochs=epochs,
+        batch_size=batch_size,
+        resume=resume,
+        auto_batch=auto_batch and not smoke,
+    )
     _commit()
     return msg
 
@@ -638,17 +790,52 @@ def _build_parser() -> argparse.ArgumentParser:
     tkm.add_argument("--archs", nargs="+", default=None)
     tkm.add_argument("--seeds", nargs="+", type=int, default=None)
 
-    ti = sub.add_parser("train-ibs", help="Train one IBS patient fold on A100")
+    ti = sub.add_parser("train-ibs", help="Train one IBS (arch, fold) on A100")
     ti.add_argument("--arch", default="resnet50")
     ti.add_argument("--fold", type=int, default=0)
     ti.add_argument("--seed", type=int, default=42)
     ti.add_argument("--epochs", type=int, default=50)
-    ti.add_argument("--batch-size", type=int, default=128)
+    ti.add_argument("--batch-size", type=int, default=0)
+    ti.add_argument("--no-auto-batch", action="store_true")
+    ti.add_argument("--resume", default="")
     ti.add_argument("--smoke", action="store_true")
 
-    tim = sub.add_parser("train-ibs-matrix", help="Train IBS arches × folds 0..4")
+    tif = sub.add_parser(
+        "train-ibs-fold",
+        help="Parallel: 5 A100s (one per arch) for a single --fold (like train-kvasir-seed)",
+    )
+    tif.add_argument("--fold", type=int, required=True)
+    tif.add_argument("--epochs", type=int, default=50)
+    tif.add_argument("--batch-size", type=int, default=0)
+    tif.add_argument("--no-auto-batch", action="store_true")
+    tif.add_argument("--archs", nargs="+", default=None)
+    tif.add_argument("--seed", type=int, default=42)
+    tif.add_argument("--resume", default="")
+    tif.add_argument("--smoke", action="store_true")
+
+    ticv = sub.add_parser(
+        "train-ibs-cv",
+        help="Parallel 5 arches × 5 folds (25 jobs; extras queue at GPU concurrency)",
+    )
+    ticv.add_argument("--folds", nargs="+", type=int, default=None)
+    ticv.add_argument("--archs", nargs="+", default=None)
+    ticv.add_argument("--epochs", type=int, default=50)
+    ticv.add_argument("--batch-size", type=int, default=0)
+    ticv.add_argument("--no-auto-batch", action="store_true")
+    ticv.add_argument("--seed", type=int, default=42)
+    ticv.add_argument("--resume", default="")
+    ticv.add_argument("--smoke", action="store_true")
+
+    sif = sub.add_parser("summarize-ibs-fold", help="Cost/metrics table for one IBS fold wave")
+    sif.add_argument("--fold", type=int, required=True)
+    sif.add_argument("--archs", nargs="+", default=None)
+
+    tim = sub.add_parser(
+        "train-ibs-matrix",
+        help="Legacy sequential arches×folds on ONE GPU (prefer train-ibs-fold / train-ibs-cv)",
+    )
     tim.add_argument("--epochs", type=int, default=50)
-    tim.add_argument("--batch-size", type=int, default=128)
+    tim.add_argument("--batch-size", type=int, default=0)
     tim.add_argument("--archs", nargs="+", default=None)
     tim.add_argument("--folds", nargs="+", type=int, default=None)
     tim.add_argument("--seed", type=int, default=42)
@@ -805,16 +992,67 @@ def main(*cli_args: str) -> None:
             )
         )
     elif action == "train-ibs":
-        print(
-            train_ibs.remote(
-                arch=args.arch,
-                fold=args.fold,
-                seed=args.seed,
-                epochs=args.epochs,
-                batch_size=args.batch_size,
-                smoke=args.smoke,
-            )
+        import sys
+
+        detached = ("--detach" in sys.argv) or ("-d" in sys.argv)
+        call = train_ibs.spawn(
+            arch=args.arch,
+            fold=args.fold,
+            seed=args.seed,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            smoke=args.smoke,
+            resume=args.resume,
+            auto_batch=not args.no_auto_batch,
         )
+        print(f"FunctionCall id: {call.object_id}", flush=True)
+        if detached:
+            print("Detached spawn submitted — safe to close the laptop.", flush=True)
+            return
+        print(call.get())
+    elif action == "train-ibs-fold":
+        import sys
+
+        detached = ("--detach" in sys.argv) or ("-d" in sys.argv)
+        archs = list(args.archs) if args.archs else list(IBS_ARCHS)
+        print(f"Spawning train_ibs_fold_wave fold={args.fold} archs={archs}", flush=True)
+        call = train_ibs_fold_wave.spawn(
+            fold=args.fold,
+            archs=archs,
+            seed=args.seed,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            smoke=args.smoke,
+            resume=args.resume,
+            auto_batch=not args.no_auto_batch,
+        )
+        print(f"FunctionCall id: {call.object_id}", flush=True)
+        if detached:
+            print("Detached spawn submitted — safe to close the laptop.", flush=True)
+            return
+        print(call.get())
+    elif action == "train-ibs-cv":
+        import sys
+
+        detached = ("--detach" in sys.argv) or ("-d" in sys.argv)
+        print("Spawning train_ibs_cv_wave (5 arches × 5 folds)", flush=True)
+        call = train_ibs_cv_wave.spawn(
+            archs=args.archs,
+            folds=args.folds,
+            seed=args.seed,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            smoke=args.smoke,
+            resume=args.resume,
+            auto_batch=not args.no_auto_batch,
+        )
+        print(f"FunctionCall id: {call.object_id}", flush=True)
+        if detached:
+            print("Detached spawn submitted — safe to close the laptop.", flush=True)
+            return
+        print(call.get())
+    elif action == "summarize-ibs-fold":
+        print(summarize_ibs_fold.remote(fold=args.fold, archs=args.archs))
     elif action == "train-ibs-matrix":
         print(
             train_ibs_matrix.remote(

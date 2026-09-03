@@ -20,7 +20,7 @@ from typing import List, Sequence
 
 _REPO = Path(__file__).resolve().parent.parent.parent
 KVASIR_ARCHS = ("resnet18", "resnet34", "resnet50", "vgg19", "vgg16")
-IBS_ARCHS = ("resnet18", "resnet34", "resnet50", "densenet121", "vgg16")
+IBS_ARCHS = KVASIR_ARCHS
 KVASIR_SEEDS = (42, 43, 44)
 IBS_FOLDS = (0, 1, 2, 3, 4)
 
