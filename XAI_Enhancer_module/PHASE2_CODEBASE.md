@@ -43,7 +43,8 @@ modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 44
 
 | Axis | Values | Defined in |
 |------|--------|------------|
-| Architectures | `resnet18`, `resnet34`, `resnet50`, `densenet121`, `vgg16` | `modal_runner/config.py` → `KVASIR_ARCHS` / `IBS_ARCHS` |
+| Architectures (Kvasir) | `resnet18`, `resnet34`, `resnet50`, `vgg19`, `vgg16` | `config.KVASIR_ARCHS` |
+| Architectures (IBS) | `resnet18`, `resnet34`, `resnet50`, `densenet121`, `vgg16` | `config.IBS_ARCHS` |
 | Kvasir seeds | `42`, `43`, `44` | `config.KVASIR_SEEDS`; pass one at a time via `--seed` |
 | IBS folds | `0`, `1`, `2`, `3`, `4` | Patient CV from Phase 1B |
 | IBS RNG seed | `42` (fixed; fold identity comes from `--fold`) | `ibs/train.py --seed` |
@@ -121,9 +122,9 @@ python -m XAI_Enhancer_module.kvasir.train \
 | 7 | resnet50 | 42 | `/vol/runs/kvasir/resnet50/seed42/` |
 | 8 | resnet50 | 43 | `/vol/runs/kvasir/resnet50/seed43/` |
 | 9 | resnet50 | 44 | `/vol/runs/kvasir/resnet50/seed44/` |
-| 10 | densenet121 | 42 | `/vol/runs/kvasir/densenet121/seed42/` |
-| 11 | densenet121 | 43 | `/vol/runs/kvasir/densenet121/seed43/` |
-| 12 | densenet121 | 44 | `/vol/runs/kvasir/densenet121/seed44/` |
+| 10 | vgg19 | 42 | `/vol/runs/kvasir/vgg19/seed42/` |
+| 11 | vgg19 | 43 | `/vol/runs/kvasir/vgg19/seed43/` |
+| 12 | vgg19 | 44 | `/vol/runs/kvasir/vgg19/seed44/` |
 | 13 | vgg16 | 42 | `/vol/runs/kvasir/vgg16/seed42/` |
 | 14 | vgg16 | 43 | `/vol/runs/kvasir/vgg16/seed43/` |
 | 15 | vgg16 | 44 | `/vol/runs/kvasir/vgg16/seed44/` |

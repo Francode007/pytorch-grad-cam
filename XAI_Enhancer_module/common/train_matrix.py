@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import List, Sequence
 
 _REPO = Path(__file__).resolve().parent.parent.parent
-ARCHS = ("resnet18", "resnet34", "resnet50", "densenet121", "vgg16")
+KVASIR_ARCHS = ("resnet18", "resnet34", "resnet50", "vgg19", "vgg16")
+IBS_ARCHS = ("resnet18", "resnet34", "resnet50", "densenet121", "vgg16")
 KVASIR_SEEDS = (42, 43, 44)
 IBS_FOLDS = (0, 1, 2, 3, 4)
 
@@ -27,7 +28,12 @@ IBS_FOLDS = (0, 1, 2, 3, 4)
 def parse_args():
     p = argparse.ArgumentParser(description="Train revision matrix (Kvasir seeds / IBS folds)")
     p.add_argument("--dataset", choices=("kvasir", "ibs", "both"), default="both")
-    p.add_argument("--archs", nargs="+", default=list(ARCHS))
+    p.add_argument(
+        "--archs",
+        nargs="+",
+        default=None,
+        help="Default: KVASIR_ARCHS for kvasir, IBS_ARCHS for ibs",
+    )
     p.add_argument("--seeds", nargs="+", type=int, default=list(KVASIR_SEEDS))
     p.add_argument("--folds", nargs="+", type=int, default=list(IBS_FOLDS))
     p.add_argument("--epochs", type=int, default=50)
@@ -56,7 +62,8 @@ def _run(cmd: List[str], dry_run: bool) -> None:
 def train_kvasir_matrix(args) -> None:
     amp = args.amp and not args.no_amp
     compile_model = args.compile and not args.no_compile
-    for arch in args.archs:
+    archs = list(args.archs) if args.archs else list(KVASIR_ARCHS)
+    for arch in archs:
         for seed in args.seeds:
             cmd = [
                 sys.executable, "-m", "XAI_Enhancer_module.kvasir.train",
@@ -79,7 +86,8 @@ def train_kvasir_matrix(args) -> None:
 def train_ibs_matrix(args) -> None:
     amp = args.amp and not args.no_amp
     compile_model = args.compile and not args.no_compile
-    for arch in args.archs:
+    archs = list(args.archs) if args.archs else list(IBS_ARCHS)
+    for arch in archs:
         for fold in args.folds:
             cmd = [
                 sys.executable, "-m", "XAI_Enhancer_module.ibs.train",
