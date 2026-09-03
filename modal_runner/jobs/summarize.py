@@ -116,21 +116,42 @@ def collect_seed_rows(
                 row["batch_size_source"] = args.get("batch_size_source")
                 row["batch_size_locked"] = args.get("batch_size_locked")
                 row["epochs_planned"] = args.get("epochs")
+                row["status"] = "started"
             except Exception as e:
                 row["args_error"] = str(e)
+        if (run_dir / "best.pth").exists():
+            row["has_best_ckpt"] = True
         if metrics_path.exists():
             try:
                 metrics = _read_json(metrics_path)
-                if isinstance(metrics, list):
+                if isinstance(metrics, list) and metrics:
                     row.update(_best_from_metrics(metrics))
-                    row["status"] = "ok" if row.get("epochs_done") else "empty_metrics"
+                    planned = int(row.get("epochs_planned") or 0)
+                    done = int(row.get("epochs_done") or 0)
+                    if planned and done >= planned and (run_dir / "last.pth").exists():
+                        row["status"] = "ok"
+                    elif done > 0 and (run_dir / "checkpoint_latest.pth").exists():
+                        row["status"] = "partial"
+                    elif done > 0:
+                        row["status"] = "stale_metrics"
+                    else:
+                        row["status"] = "empty_metrics"
                 else:
                     row["status"] = "bad_metrics"
             except Exception as e:
                 row["status"] = "metrics_error"
                 row["metrics_error"] = str(e)
+        elif row.get("status") == "started":
+            row["status"] = "crashed"
         rows.append(row)
     return rows
+
+
+def _read_json_safe(path: Path) -> Any:
+    try:
+        return _read_json(path)
+    except Exception:
+        return None
 
 
 def format_summary_table(

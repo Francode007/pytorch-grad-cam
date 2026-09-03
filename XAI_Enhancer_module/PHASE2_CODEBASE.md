@@ -55,7 +55,8 @@ Unless overridden on the CLI:
 | Flag | Default (Modal Kvasir seed run) | Smoke (`--smoke`) |
 |------|--------------------------------|-------------------|
 | `--epochs` | `50` | `2` |
-| `--batch-size` | `0` + **`--auto-batch-size`** (target ~82% VRAM) | `32` |
+| `--batch-size` | `0` + **`--auto-batch-size`** (AdamW probe, cap by ≥20 steps/epoch) | `32` |
+
 | `--device` | `cuda` | `cuda` |
 | `--num-workers` / prefetch | `8` / `4` | same |
 | `--amp` / `--amp-dtype` | on / `bfloat16` | on / `bfloat16` |
@@ -353,7 +354,8 @@ Classifier eval (`eval-*-cls`) after training is cheap (minutes per checkpoint) 
 3. **IBS fold = new patient partition** — each fold has a disjoint test exam set; report mean±SD over folds.
 4. **Legacy paths** — eval still falls back to `/vol/runs/{ds}/{arch}/best.pth` if an old flat layout exists.
 5. **Do not use** the numeric `IBS-preprocessed-dataset` for these matrices; trainers default to `IBS-patient-dataset` (D-M4).
-6. **GPU packing** — `--auto-batch-size` targets ~82% VRAM; check `train.log` lines `[gpu …]` / `gpu_used_frac` in `metrics.json`. SM util can still be low if the dataloader is the bottleneck (`num_workers` / `prefetch_factor` already raised for A100).
+6. **GPU packing** — auto-batch probes with **AdamW** (not SGD) and caps batch so `n_train / batch ≥ 20` steps/epoch (Kvasir ≈ batch ≤ ~275). That may leave VRAM below 82% on light arches; raising batch further would produce 5-step epochs and unstable training. Prefer effective batch via `--grad-accum-steps` if you need larger updates without fewer steps.
+7. **Detach** — `train-kvasir-seed` calls a single remote orchestrator (`train_kvasir_seed_wave`) that maps the 5 GPUs. Do not map from the local entrypoint under `--detach` (Modal only keeps the last function alive).
 
 ---
 

@@ -191,13 +191,19 @@ modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 43
 modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 44
 ```
 
-After each wave, Modal writes a cost/metrics table and locks batch sizes:
+# After each wave, Modal writes a cost/metrics table and locks batch sizes:
 
 ```
 /vol/runs/kvasir/waves/seed{seed}/wave_summary.json
 /vol/runs/kvasir/waves/seed{seed}/wave_summary.txt
 /vol/runs/kvasir/waves/seed{seed}/wave.log
 /vol/runs/kvasir/locked_batch_sizes.json
+```
+
+Clean relaunch after a failed wave (clears bad locks + seed run dirs):
+
+```bash
+modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 42 --reset
 ```
 
 Re-print / re-save a finished wave anytime:

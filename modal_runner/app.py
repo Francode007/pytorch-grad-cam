@@ -205,6 +205,106 @@ def summarize_kvasir_seed(
     return msg
 
 
+@app.function(image=image, volumes=_VOLUMES, timeout=600, cpu=1.0, memory=2048)
+def reset_kvasir_seed(
+    seed: int = 42,
+    archs: Optional[List[str]] = None,
+    clear_locks: bool = True,
+    wipe_runs: bool = True,
+) -> str:
+    """Clear locked batch sizes and wipe ``{arch}/seed{seed}`` run dirs."""
+    from modal_runner.jobs.reset import reset_kvasir_seed as _job
+
+    ensure_layout()
+    volume.reload()
+    msg = _job(seed=seed, archs=archs, clear_locks=clear_locks, wipe_runs=wipe_runs)
+    _commit()
+    return msg
+
+
+@app.function(
+    image=image,
+    volumes=_VOLUMES,
+    timeout=TIMEOUT_TRAIN_S,
+    cpu=2.0,
+    memory=4096,
+)
+def train_kvasir_seed_wave(
+    seed: int = 42,
+    archs: Optional[List[str]] = None,
+    epochs: int = 50,
+    batch_size: int = 0,
+    smoke: bool = False,
+    resume: str = "",
+    auto_batch: bool = True,
+    reset: bool = False,
+) -> str:
+    """
+    Orchestrator: optional reset → parallel train_kvasir.map → summarize.
+
+    Running this as a *single* Modal function is required for ``modal run --detach``:
+    detach only keeps the last triggered function alive; mapping from the local
+    entrypoint would drop child GPUs after disconnect.
+    """
+    chosen = list(archs) if archs else list(KVASIR_ARCHS)
+    lines: List[str] = [
+        f"train_kvasir_seed_wave seed={seed} archs={chosen} epochs={epochs} reset={reset}"
+    ]
+
+    if reset:
+        from modal_runner.jobs.reset import reset_kvasir_seed as _reset
+
+        volume.reload()
+        lines.append(
+            _reset(seed=seed, archs=chosen, clear_locks=True, wipe_runs=True)
+        )
+        _commit()
+
+    # Fan out child A100 containers from this remote orchestrator.
+    results = list(
+        train_kvasir.map(
+            chosen,
+            kwargs={
+                "seed": seed,
+                "epochs": epochs,
+                "batch_size": batch_size,
+                "smoke": smoke,
+                "resume": resume,
+                "auto_batch": auto_batch,
+            },
+            order_outputs=True,
+            return_exceptions=True,
+            wrap_returned_exceptions=False,
+        )
+    )
+    train_lines: List[str] = []
+    for arch, res in zip(chosen, results):
+        if isinstance(res, BaseException):
+            line = f"FAIL  arch={arch} seed={seed}: {res}"
+            print(line, flush=True)
+            train_lines.append(line)
+        else:
+            line = f"OK    {res}"
+            print(line, flush=True)
+            train_lines.append(str(res))
+        lines.append(line)
+
+    from modal_runner.jobs.summarize import summarize_kvasir_seed as _summarize
+
+    volume.reload()
+    summary = _summarize(seed=seed, archs=chosen, train_results=train_lines)
+    _commit()
+    lines.append(summary)
+    n_fail = sum(1 for r in results if isinstance(r, BaseException))
+    if n_fail:
+        raise RuntimeError(
+            f"{n_fail}/{len(chosen)} arch(s) failed for seed={seed}. "
+            f"Resume: modal run --detach -m modal_runner.app -- "
+            f"train-kvasir --arch <arch> --seed {seed} --resume auto"
+        )
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # GPU jobs — train / eval
 # ---------------------------------------------------------------------------
@@ -507,6 +607,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Pass to every arch (e.g. auto to continue from checkpoint_latest)",
     )
     tks.add_argument("--smoke", action="store_true")
+    tks.add_argument(
+        "--reset",
+        action="store_true",
+        help="Wipe seed run dirs + locked_batch_sizes before training (clean relaunch)",
+    )
 
     sks = sub.add_parser(
         "summarize-kvasir-seed",
@@ -514,6 +619,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sks.add_argument("--seed", type=int, required=True)
     sks.add_argument("--archs", nargs="+", default=None)
+
+    rks = sub.add_parser(
+        "reset-kvasir-seed",
+        help="Clear batch locks and wipe /vol/runs/kvasir/{arch}/seed{N}/",
+    )
+    rks.add_argument("--seed", type=int, required=True)
+    rks.add_argument("--archs", nargs="+", default=None)
+    rks.add_argument("--keep-runs", action="store_true", help="Only clear locks, keep run dirs")
+    rks.add_argument("--keep-locks", action="store_true", help="Only wipe runs, keep locks")
 
     tkm = sub.add_parser(
         "train-kvasir-matrix",
@@ -626,49 +740,34 @@ def main(*cli_args: str) -> None:
             )
         )
     elif action == "train-kvasir-seed":
-        # Fan out: one A100 container per architecture for this seed only.
-        # Use `modal run --detach ...` so the job survives laptop sleep/logout.
+        # Single remote orchestrator so --detach keeps the whole wave (map+summary).
         archs = list(args.archs) if args.archs else list(KVASIR_ARCHS)
-        auto_batch = not args.no_auto_batch
         print(
-            f"Spawning {len(archs)} A100 jobs for Kvasir seed={args.seed}: {archs}",
+            f"Dispatching train_kvasir_seed_wave seed={args.seed} archs={archs} "
+            f"reset={args.reset} (detach-safe single remote)",
             flush=True,
         )
-        results = list(
-            train_kvasir.map(
-                archs,
-                kwargs={
-                    "seed": args.seed,
-                    "epochs": args.epochs,
-                    "batch_size": args.batch_size,
-                    "smoke": args.smoke,
-                    "resume": args.resume,
-                    "auto_batch": auto_batch,
-                },
-                order_outputs=True,
-                return_exceptions=True,
+        print(
+            train_kvasir_seed_wave.remote(
+                seed=args.seed,
+                archs=archs,
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                smoke=args.smoke,
+                resume=args.resume,
+                auto_batch=not args.no_auto_batch,
+                reset=args.reset,
             )
         )
-        train_lines: List[str] = []
-        for arch, res in zip(archs, results):
-            if isinstance(res, Exception):
-                line = f"FAIL  arch={arch} seed={args.seed}: {res}"
-                print(line, flush=True)
-                train_lines.append(line)
-            else:
-                line = f"OK    {res}"
-                print(line, flush=True)
-                train_lines.append(str(res))
-        # Always write wave log + cost table (even if some arches failed).
-        print(summarize_kvasir_seed.remote(seed=args.seed, archs=archs, train_results=train_lines))
-        n_fail = sum(1 for r in results if isinstance(r, Exception))
-        if n_fail:
-            raise SystemExit(
-                f"{n_fail}/{len(archs)} arch(s) failed for seed={args.seed}. "
-                f"Resume with: modal run --detach -m modal_runner.app -- "
-                f"train-kvasir --arch <arch> --seed {args.seed} --resume auto"
+    elif action == "reset-kvasir-seed":
+        print(
+            reset_kvasir_seed.remote(
+                seed=args.seed,
+                archs=args.archs,
+                clear_locks=not args.keep_locks,
+                wipe_runs=not args.keep_runs,
             )
-        print(f"All {len(archs)} arches finished for seed={args.seed}.", flush=True)
+        )
     elif action == "summarize-kvasir-seed":
         print(
             summarize_kvasir_seed.remote(

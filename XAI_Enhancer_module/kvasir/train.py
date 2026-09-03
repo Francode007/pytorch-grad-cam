@@ -40,11 +40,12 @@ from XAI_Enhancer_module.utils.model_utils import get_device
 
 # Conservative A100-40GB defaults (224², AMP bf16) used when --auto-batch-size is off
 # or as the search start / fallback after OOM.
+# Cap-friendly A100 defaults; auto-probe further respects min_steps_per_epoch.
 A100_DEFAULT_BATCH = {
-    "resnet18": 512,
-    "resnet34": 384,
-    "resnet50": 256,
-    "densenet121": 192,
+    "resnet18": 256,
+    "resnet34": 256,
+    "resnet50": 192,
+    "densenet121": 160,
     "vgg16": 128,
     "vgg19": 96,
 }
@@ -155,7 +156,7 @@ def _write_args(
 
 
 class _Tee:
-    """Write to multiple streams (stdout + train.log)."""
+    """Write to multiple streams (stdout + train.log). Must look file-like for torch.compile."""
 
     def __init__(self, *streams: TextIO):
         self.streams = streams
@@ -169,6 +170,35 @@ class _Tee:
     def flush(self) -> None:
         for s in self.streams:
             s.flush()
+
+    def isatty(self) -> bool:
+        # torch.fx / dynamo call sys.stdout.isatty(); never treat the tee as a TTY.
+        return False
+
+    def fileno(self) -> int:
+        for s in self.streams:
+            try:
+                return s.fileno()
+            except Exception:
+                continue
+        raise OSError("tee has no fileno")
+
+    @property
+    def encoding(self) -> str:
+        for s in self.streams:
+            enc = getattr(s, "encoding", None)
+            if enc:
+                return enc
+        return "utf-8"
+
+    def readable(self) -> bool:
+        return False
+
+    def writable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
 
 
 def _unwrap(model: nn.Module) -> nn.Module:
@@ -224,20 +254,27 @@ def find_max_batch_size(
     amp: bool,
     amp_dtype: torch.dtype,
     start: int = 32,
-    max_bs: int = 1024,
+    max_bs: int = 512,
     target_mem_frac: float = 0.82,
+    weight_decay: float = 1e-4,
 ) -> int:
     """
-    Binary-search the largest power-of-two-ish batch that fits, then pick the
-    largest candidate whose post-step memory use is <= target_mem_frac of VRAM.
+    Probe largest batch that fits under target_mem_frac using AdamW (matches training).
+
+    ``max_bs`` should already include the dataset min-steps cap so we do not pick
+    batches that leave only a handful of updates per epoch.
     """
     model.train()
     criterion = nn.CrossEntropyLoss()
     candidates: List[int] = []
-    bs = start
+    bs = max(8, int(start))
     while bs <= max_bs:
         candidates.append(bs)
         bs *= 2
+    if not candidates or candidates[-1] != max_bs:
+        candidates.append(int(max_bs))
+    # unique sorted
+    candidates = sorted(set(candidates))
 
     def _try(batch: int) -> Tuple[bool, float]:
         torch.cuda.empty_cache()
@@ -245,7 +282,8 @@ def find_max_batch_size(
         try:
             x = torch.randn(batch, 3, 224, 224, device=device)
             y = torch.zeros(batch, dtype=torch.long, device=device)
-            optimizer = torch.optim.SGD(model.parameters(), lr=1e-4)
+            # Match real trainer optimizer so peak mem ≈ training (SGD underestimates).
+            optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=weight_decay)
             optimizer.zero_grad(set_to_none=True)
             if amp:
                 with torch.amp.autocast("cuda", dtype=amp_dtype):
@@ -267,51 +305,43 @@ def find_max_batch_size(
             torch.cuda.empty_cache()
             return False, 1.0
 
-    lo, hi = start, start
-    ok_frac = 0.0
+    lo, ok_frac = candidates[0], 0.0
     for c in candidates:
         fits, frac = _try(c)
         print(f"[auto-batch] try bs={c} fits={fits} mem={100 * frac:.1f}%", flush=True)
         if fits:
-            lo, hi, ok_frac = c, c, frac
+            lo, ok_frac = c, frac
         else:
             break
-    # Refine between hi and 2*hi if we never OOM'd at max
-    if hi == candidates[-1] and ok_frac < target_mem_frac:
-        # probe upward in +25% steps until OOM or target
-        probe = hi
-        while probe < max_bs:
-            nxt = min(max_bs, int(probe * 1.25))
-            if nxt <= probe:
-                break
-            fits, frac = _try(nxt)
-            print(f"[auto-batch] try bs={nxt} fits={fits} mem={100 * frac:.1f}%", flush=True)
-            if not fits:
-                break
-            lo, ok_frac = nxt, frac
-            probe = nxt
-            if frac >= target_mem_frac:
-                break
 
-    # If far below target, we already took the max that fits — good.
-    # If overshot target slightly, step down until under target.
-    chosen = lo
+    # If still far below target and we have headroom below max_bs, probe +12.5% steps.
+    probe = lo
+    while ok_frac < target_mem_frac - 0.05 and probe < max_bs:
+        nxt = min(max_bs, int(probe * 1.25))
+        if nxt <= probe:
+            break
+        fits, frac = _try(nxt)
+        print(f"[auto-batch] try bs={nxt} fits={fits} mem={100 * frac:.1f}%", flush=True)
+        if not fits:
+            break
+        lo, ok_frac = nxt, frac
+        probe = nxt
+
     if ok_frac > target_mem_frac + 0.05:
         for c in reversed([c for c in candidates if c <= lo] or [lo]):
             fits, frac = _try(c)
             if fits and frac <= target_mem_frac:
-                chosen = c
-                ok_frac = frac
+                lo, ok_frac = c, frac
                 break
 
     print(
-        f"[auto-batch] selected bs={chosen} (post-step mem ≈ {100 * ok_frac:.1f}% "
-        f"target≤{100 * target_mem_frac:.0f}%)",
+        f"[auto-batch] selected bs={lo} (post-step mem ≈ {100 * ok_frac:.1f}% "
+        f"target≤{100 * target_mem_frac:.0f}% max_bs={max_bs})",
         flush=True,
     )
     model.zero_grad(set_to_none=True)
     torch.cuda.empty_cache()
-    return max(chosen, 1)
+    return max(int(lo), 1)
 
 
 def parse_args():
@@ -348,6 +378,12 @@ def parse_args():
         help="JSON lock file (default: {output-dir}/locked_batch_sizes.json)",
     )
     p.add_argument("--target-mem-frac", type=float, default=0.82)
+    p.add_argument(
+        "--min-steps-per-epoch",
+        type=int,
+        default=20,
+        help="Cap batch so train_len/batch >= this (avoids 5-step epochs on Kvasir)",
+    )
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--weight-decay", type=float, default=1e-4)
     p.add_argument("--optimizer", type=str, default="adamw", choices=["sgd", "adam", "adamw"])
@@ -525,19 +561,45 @@ def main():
     lock_path = _locked_batch_file(args.output_dir, args.locked_batch_file)
     args.locked_batch_file = str(lock_path)
 
+    # Ensure splits exist and measure train set size before choosing batch size.
+    splits_dir = data_root / "splits"
+    if not (splits_dir / "train.txt").exists() or not (splits_dir / "test.txt").exists():
+        print("Creating 70/10/20 train/val/test split...")
+        prepare_splits(str(data_root), seed=args.seed)
+    n_train = sum(1 for _ in (splits_dir / "train.txt").open())
+    max_bs_by_steps = max(16, n_train // max(1, args.min_steps_per_epoch))
+    print(
+        f"[batch] n_train={n_train} min_steps/epoch={args.min_steps_per_epoch} "
+        f"→ max_bs_by_steps={max_bs_by_steps}",
+        flush=True,
+    )
+
     batch_size = int(args.batch_size)
     batch_size_source = "cli"
     if batch_size > 0:
         batch_size_source = "cli"
+        if batch_size > max_bs_by_steps:
+            print(
+                f"[batch] CLI batch_size={batch_size} > max_bs_by_steps={max_bs_by_steps}; "
+                f"capping to preserve ≥{args.min_steps_per_epoch} steps/epoch",
+                flush=True,
+            )
+            batch_size = max_bs_by_steps
+            batch_size_source = "cli-capped"
     else:
         locked = None if args.force_auto_batch else _load_locked_batch(lock_path, args.arch)
         if locked is not None:
-            batch_size = locked
-            batch_size_source = "locked"
-            print(f"[batch] using locked {args.arch}={batch_size} from {lock_path}", flush=True)
+            batch_size = min(int(locked), max_bs_by_steps)
+            batch_size_source = "locked" if batch_size == int(locked) else "locked-capped"
+            print(
+                f"[batch] using locked {args.arch}={locked} from {lock_path}"
+                + (f" (capped→{batch_size})" if batch_size != int(locked) else ""),
+                flush=True,
+            )
         elif args.auto_batch_size and device.type == "cuda":
             print(
-                f"[auto-batch] probing for arch={args.arch} target_mem={args.target_mem_frac}",
+                f"[auto-batch] probing for arch={args.arch} target_mem={args.target_mem_frac} "
+                f"max_bs={max_bs_by_steps}",
                 flush=True,
             )
             batch_size = find_max_batch_size(
@@ -545,37 +607,33 @@ def main():
                 device,
                 amp=args.amp,
                 amp_dtype=amp_dtype,
-                start=max(32, A100_DEFAULT_BATCH.get(args.arch, 128) // 4),
-                max_bs=1024,
+                start=max(16, min(32, max_bs_by_steps // 4)),
+                max_bs=max_bs_by_steps,
                 target_mem_frac=args.target_mem_frac,
+                weight_decay=args.weight_decay,
             )
             batch_size_source = "auto-probe"
         else:
-            batch_size = A100_DEFAULT_BATCH.get(args.arch, 128)
+            batch_size = min(A100_DEFAULT_BATCH.get(args.arch, 128), max_bs_by_steps)
             batch_size_source = "default"
 
     args.batch_size = batch_size
     print(f"Using batch_size={batch_size} (source={batch_size_source})", flush=True)
 
-    # Persist resolved size immediately; mark locked after first epoch confirms it
-    # (or immediately if we already loaded from the shared lock file).
+    # Write args immediately; do NOT lock shared batch file until epoch 1 succeeds.
     _write_args(
         out_dir,
         args,
         batch_size=batch_size,
         batch_size_source=batch_size_source,
-        batch_size_locked=(batch_size_source == "locked"),
-        extra={"started_utc": datetime.now(timezone.utc).isoformat()},
+        batch_size_locked=(batch_size_source in {"locked", "locked-capped"}),
+        extra={
+            "started_utc": datetime.now(timezone.utc).isoformat(),
+            "n_train": n_train,
+            "max_bs_by_steps": max_bs_by_steps,
+            "min_steps_per_epoch": args.min_steps_per_epoch,
+        },
     )
-    if batch_size_source == "auto-probe":
-        _update_locked_batch_file(
-            lock_path,
-            arch=args.arch,
-            batch_size=batch_size,
-            seed=args.seed,
-            source="auto-probe-pre-epoch",
-        )
-        _commit_volume()
 
     train_loader, val_loader = create_loaders(args, data_root, batch_size)
     print(f"train steps/epoch≈{len(train_loader)}  val batches={len(val_loader)}", flush=True)
