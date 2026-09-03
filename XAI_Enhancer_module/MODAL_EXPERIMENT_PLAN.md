@@ -139,30 +139,35 @@ modal run -m modal_runner.app -- train-kvasir --arch resnet18 --smoke
 
 **Goal:** 5 archs × 3 seeds (Kvasir) and 5 archs × 5 folds (IBS); best ckpt by **val macro-F1**; test AUROC/F1/ECE.
 
-### Code still to land (local, then Modal picks it up via `add_local_dir`)
+**Status:** code landed on `modal_kvasir` — launch GPU matrix next.
+
+### Code (landed)
 
 | Piece | Path | Notes |
 |-------|------|--------|
-| Seed/fold-aware train | `kvasir/train.py`, `ibs/train.py` | `--fold`, seed all RNGs, F1 checkpoint, `args.json` |
-| Classifier metrics | `kvasir/eval_classification.py`, `ibs/eval_classification.py` | AUROC, per-class, ECE, `--split test` |
-| Matrix orchestrator | `common/train_matrix.py` | 5×3 Kvasir, 5×5 IBS → `runs/{ds}/{arch}/seed{s}\|fold{k}/` |
-| Modal wiring | `modal_runner/jobs/train.py`, `app.py` | expose `train-matrix`, pass `--seed` / `--fold` |
+| Seed/fold-aware train | `kvasir/train.py`, `ibs/train.py` | Kvasir `--seed`; IBS `--fold`; val **macro-F1** ckpt; `args.json` |
+| Classifier metrics | `kvasir/eval_classification.py`, `ibs/eval_classification.py` | AUROC, F1, ECE, per-class; default `--split test` |
+| Matrix orchestrator | `common/train_matrix.py` | local 5×3 / 5×5 loops |
+| Modal wiring | `modal_runner/jobs/train.py`, `app.py` | `train-*-matrix`, `--fold` / `--seeds` |
 
-### Modal commands (after Phase 2 code lands)
+### Modal commands
 
 ```bash
-# Single run (debug)
+# Smoke (2 epochs)
+modal run -m modal_runner.app -- train-kvasir --arch resnet18 --seed 42 --smoke
+modal run -m modal_runner.app -- train-ibs --arch resnet18 --fold 0 --smoke
+
+# Single full run
 modal run -m modal_runner.app -- train-kvasir --arch resnet50 --seed 42 --epochs 50
+modal run -m modal_runner.app -- train-ibs --arch resnet50 --fold 0 --epochs 50
 
-# Full Kvasir matrix (5 arches; extend CLI to loop seeds 42/43/44 when train_matrix exists)
+# Full matrices (long)
 modal run -m modal_runner.app -- train-kvasir-matrix --epochs 50
-
-# Today: one IBS arch (image-level until folds + --fold exist)
-modal run -m modal_runner.app -- train-ibs --arch resnet50 --epochs 50
+modal run -m modal_runner.app -- train-ibs-matrix --epochs 50
 
 # Classifier eval on held-out test
-modal run -m modal_runner.app -- eval-kvasir-cls --arch resnet50 --split test
-modal run -m modal_runner.app -- eval-ibs-cls --arch resnet50 --split test
+modal run -m modal_runner.app -- eval-kvasir-cls --arch resnet50 --seed 42 --split test
+modal run -m modal_runner.app -- eval-ibs-cls --arch resnet50 --fold 0 --split test
 ```
 
 **Target layout on volume:**
@@ -275,7 +280,7 @@ Until those actions exist, run modules inside a one-off Modal function or extend
 |-----------------------------|-------|-------------------------------|
 | 0.4 Kvasir near-dup | 1A ✅ | `prepare-kvasir-splits` (done on volume) |
 | 0.1–0.2 IBS IDs / counts | 1B ✅ | `download-ibs-patient`, `prepare-ibs-folds` (done on volume) |
-| 1.1–1.3 Train + classifier table | 2 | `train-kvasir`, `train-kvasir-matrix`, `train-ibs`, `eval-*-cls` (matrix/seeds/F1 pending) |
+| 1.1–1.3 Train + classifier table | 2 | `train-kvasir`, `train-kvasir-matrix`, `train-ibs`, `train-ibs-matrix`, `eval-*-cls` |
 | 1.4 + 2.1 Table 1 / CAM | 3 | `eval-*-cams` (per-image log / uniform / layer-set pending) |
 | 2.2 Stats / win-tie-loss | 4 | pull + `analysis/stats.py` (to build) |
 | 2.3–2.5, 3.*, 4.* | 5 | extend Modal jobs after code |

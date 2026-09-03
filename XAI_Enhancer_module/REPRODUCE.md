@@ -22,20 +22,32 @@ python -m XAI_Enhancer_module.ibs.download_and_prepare --skip-download \
 See [`ibs/metadata/README.md`](ibs/metadata/README.md). The numeric
 `pre-processed-ibs` dump is **not** used for patient-level folds (D-M4).
 
-## Training (to be updated in Phase 2)
+## Training (Phase 2)
 
 ```bash
+# Kvasir — one seed (best ckpt by val macro-F1 → runs/kvasir/{arch}/seed{seed}/)
 python -m XAI_Enhancer_module.kvasir.train --arch resnet50 --data-root data/kvasir-v2 --seed 42
+
+# IBS — one patient fold
+python -m XAI_Enhancer_module.ibs.train --arch resnet50 --data-root data/IBS-patient-dataset --fold 0
+
+# Full matrices
+python -m XAI_Enhancer_module.common.train_matrix --dataset both --epochs 50
+
+# Test-set classifier metrics
+python -m XAI_Enhancer_module.kvasir.eval_classification \
+  --checkpoint runs/kvasir/resnet50/seed42/best.pth --split test
+python -m XAI_Enhancer_module.ibs.eval_classification \
+  --checkpoint runs/ibs/resnet50/fold0/best.pth --fold 0 --split test
 ```
 
-### On Modal (Phase 1 — run now)
+### On Modal
 
 ```bash
-modal run -m modal_runner.app -- prepare-kvasir-splits --seed 42
-modal run -m modal_runner.app -- download-ibs-patient
-modal run -m modal_runner.app -- prepare-ibs-folds --seed 42
-modal run -m modal_runner.app -- smoke-splits
-modal run -m modal_runner.app -- train-kvasir --arch resnet18 --smoke
+modal run -m modal_runner.app -- train-kvasir --arch resnet18 --seed 42 --smoke
+modal run -m modal_runner.app -- train-ibs --arch resnet18 --fold 0 --smoke
+modal run -m modal_runner.app -- train-kvasir-matrix --epochs 50
+modal run -m modal_runner.app -- train-ibs-matrix --epochs 50
 ```
 
 Full phase checklist: [`MODAL_EXPERIMENT_PLAN.md`](MODAL_EXPERIMENT_PLAN.md).

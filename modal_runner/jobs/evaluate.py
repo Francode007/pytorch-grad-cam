@@ -14,30 +14,29 @@ def eval_kvasir_classification(
     arch: str = "resnet50",
     checkpoint: Optional[str] = None,
     split: str = "test",
+    seed: int = 42,
     batch_size: int = 64,
     output: Optional[str] = None,
 ) -> str:
     ensure_layout()
     configure_torch_home()
-    ckpt = checkpoint or str(KVASIR_RUNS / arch / "best.pth")
+    ckpt = checkpoint or str(KVASIR_RUNS / arch / f"seed{seed}" / "best.pth")
     if not Path(ckpt).exists():
-        raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
-    out = output or str(KVASIR_RUNS / arch / f"cls_{split}.json")
+        # legacy flat layout fallback
+        legacy = KVASIR_RUNS / arch / "best.pth"
+        if legacy.exists() and not checkpoint:
+            ckpt = str(legacy)
+        else:
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
+    out = output or str(Path(ckpt).with_name(f"cls_{split}.json"))
     args = [
-        "--data-root",
-        str(KVASIR_ROOT),
-        "--arch",
-        arch,
-        "--checkpoint",
-        ckpt,
-        "--split",
-        split,
-        "--batch-size",
-        str(batch_size),
-        "--device",
-        "cuda",
-        "--output",
-        out,
+        "--data-root", str(KVASIR_ROOT),
+        "--arch", arch,
+        "--checkpoint", ckpt,
+        "--split", split,
+        "--batch-size", str(batch_size),
+        "--device", "cuda",
+        "--output", out,
     ]
     run_module("XAI_Enhancer_module.kvasir.eval_classification", args)
     return f"Classification metrics -> {out}"
@@ -48,30 +47,29 @@ def eval_ibs_classification(
     arch: str = "resnet50",
     checkpoint: Optional[str] = None,
     split: str = "test",
+    fold: int = 0,
     batch_size: int = 64,
     output: Optional[str] = None,
 ) -> str:
     ensure_layout()
     configure_torch_home()
-    ckpt = checkpoint or str(IBS_RUNS / arch / "best.pth")
+    ckpt = checkpoint or str(IBS_RUNS / arch / f"fold{fold}" / "best.pth")
     if not Path(ckpt).exists():
-        raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
-    out = output or str(IBS_RUNS / arch / f"cls_{split}.json")
+        legacy = IBS_RUNS / arch / "best.pth"
+        if legacy.exists() and not checkpoint:
+            ckpt = str(legacy)
+        else:
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
+    out = output or str(Path(ckpt).with_name(f"cls_{split}.json"))
     args = [
-        "--data-root",
-        str(IBS_ROOT),
-        "--arch",
-        arch,
-        "--checkpoint",
-        ckpt,
-        "--split",
-        split,
-        "--batch-size",
-        str(batch_size),
-        "--device",
-        "cuda",
-        "--output",
-        out,
+        "--data-root", str(IBS_ROOT),
+        "--arch", arch,
+        "--fold", str(fold),
+        "--checkpoint", ckpt,
+        "--split", split,
+        "--batch-size", str(batch_size),
+        "--device", "cuda",
+        "--output", out,
     ]
     run_module("XAI_Enhancer_module.ibs.eval_classification", args)
     return f"IBS classification metrics -> {out}"

@@ -223,13 +223,13 @@ def train_kvasir(
 )
 def train_kvasir_matrix(
     archs: Optional[List[str]] = None,
-    seed: int = 42,
+    seeds: Optional[List[int]] = None,
     epochs: int = 50,
     batch_size: int = 128,
 ) -> str:
     from modal_runner.jobs.train import train_kvasir_matrix as _job
 
-    msg = _job(archs=archs, seed=seed, epochs=epochs, batch_size=batch_size)
+    msg = _job(archs=archs, seeds=seeds, epochs=epochs, batch_size=batch_size)
     _commit()
     return msg
 
@@ -243,6 +243,7 @@ def train_kvasir_matrix(
 )
 def train_ibs(
     arch: str = "resnet50",
+    fold: int = 0,
     seed: int = 42,
     epochs: int = 50,
     batch_size: int = 128,
@@ -253,7 +254,28 @@ def train_ibs(
     if smoke:
         epochs = min(epochs, 2)
         batch_size = min(batch_size, 32)
-    msg = _job(arch=arch, seed=seed, epochs=epochs, batch_size=batch_size)
+    msg = _job(arch=arch, fold=fold, seed=seed, epochs=epochs, batch_size=batch_size)
+    _commit()
+    return msg
+
+
+@app.function(
+    image=image,
+    volumes=_VOLUMES,
+    gpu=GPU_TRAIN,
+    timeout=TIMEOUT_TRAIN_S,
+    memory=65536,
+)
+def train_ibs_matrix(
+    archs: Optional[List[str]] = None,
+    folds: Optional[List[int]] = None,
+    seed: int = 42,
+    epochs: int = 50,
+    batch_size: int = 128,
+) -> str:
+    from modal_runner.jobs.train import train_ibs_matrix as _job
+
+    msg = _job(archs=archs, folds=folds, seed=seed, epochs=epochs, batch_size=batch_size)
     _commit()
     return msg
 
@@ -269,10 +291,11 @@ def eval_kvasir_classification(
     arch: str = "resnet50",
     checkpoint: Optional[str] = None,
     split: str = "test",
+    seed: int = 42,
 ) -> str:
     from modal_runner.jobs.evaluate import eval_kvasir_classification as _job
 
-    msg = _job(arch=arch, checkpoint=checkpoint, split=split)
+    msg = _job(arch=arch, checkpoint=checkpoint, split=split, seed=seed)
     _commit()
     return msg
 
@@ -288,10 +311,11 @@ def eval_ibs_classification(
     arch: str = "resnet50",
     checkpoint: Optional[str] = None,
     split: str = "test",
+    fold: int = 0,
 ) -> str:
     from modal_runner.jobs.evaluate import eval_ibs_classification as _job
 
-    msg = _job(arch=arch, checkpoint=checkpoint, split=split)
+    msg = _job(arch=arch, checkpoint=checkpoint, split=split, fold=fold)
     _commit()
     return msg
 
@@ -425,26 +449,36 @@ def _build_parser() -> argparse.ArgumentParser:
     tk.add_argument("--batch-size", type=int, default=128)
     tk.add_argument("--smoke", action="store_true", help="2 epochs, small batch")
 
-    tkm = sub.add_parser("train-kvasir-matrix", help="Train all revision arches sequentially")
-    tkm.add_argument("--seed", type=int, default=42)
+    tkm = sub.add_parser("train-kvasir-matrix", help="Train arches × seeds (42/43/44)")
     tkm.add_argument("--epochs", type=int, default=50)
     tkm.add_argument("--batch-size", type=int, default=128)
     tkm.add_argument("--archs", nargs="+", default=None)
+    tkm.add_argument("--seeds", nargs="+", type=int, default=None)
 
-    ti = sub.add_parser("train-ibs", help="Train one IBS classifier on A100")
+    ti = sub.add_parser("train-ibs", help="Train one IBS patient fold on A100")
     ti.add_argument("--arch", default="resnet50")
+    ti.add_argument("--fold", type=int, default=0)
     ti.add_argument("--seed", type=int, default=42)
     ti.add_argument("--epochs", type=int, default=50)
     ti.add_argument("--batch-size", type=int, default=128)
     ti.add_argument("--smoke", action="store_true")
 
+    tim = sub.add_parser("train-ibs-matrix", help="Train IBS arches × folds 0..4")
+    tim.add_argument("--epochs", type=int, default=50)
+    tim.add_argument("--batch-size", type=int, default=128)
+    tim.add_argument("--archs", nargs="+", default=None)
+    tim.add_argument("--folds", nargs="+", type=int, default=None)
+    tim.add_argument("--seed", type=int, default=42)
+
     ekc = sub.add_parser("eval-kvasir-cls", help="Classifier metrics on a Kvasir split")
     ekc.add_argument("--arch", default="resnet50")
+    ekc.add_argument("--seed", type=int, default=42)
     ekc.add_argument("--split", default="test")
     ekc.add_argument("--checkpoint", default="")
 
-    eic = sub.add_parser("eval-ibs-cls", help="Classifier metrics on an IBS split")
+    eic = sub.add_parser("eval-ibs-cls", help="Classifier metrics on an IBS fold split")
     eic.add_argument("--arch", default="resnet50")
+    eic.add_argument("--fold", type=int, default=0)
     eic.add_argument("--split", default="test")
     eic.add_argument("--checkpoint", default="")
 
@@ -524,7 +558,7 @@ def main(*cli_args: str) -> None:
         print(
             train_kvasir_matrix.remote(
                 archs=args.archs,
-                seed=args.seed,
+                seeds=args.seeds,
                 epochs=args.epochs,
                 batch_size=args.batch_size,
             )
@@ -533,10 +567,21 @@ def main(*cli_args: str) -> None:
         print(
             train_ibs.remote(
                 arch=args.arch,
+                fold=args.fold,
                 seed=args.seed,
                 epochs=args.epochs,
                 batch_size=args.batch_size,
                 smoke=args.smoke,
+            )
+        )
+    elif action == "train-ibs-matrix":
+        print(
+            train_ibs_matrix.remote(
+                archs=args.archs,
+                folds=args.folds,
+                seed=args.seed,
+                epochs=args.epochs,
+                batch_size=args.batch_size,
             )
         )
     elif action == "eval-kvasir-cls":
@@ -545,6 +590,7 @@ def main(*cli_args: str) -> None:
                 arch=args.arch,
                 checkpoint=args.checkpoint or None,
                 split=args.split,
+                seed=args.seed,
             )
         )
     elif action == "eval-ibs-cls":
@@ -553,6 +599,7 @@ def main(*cli_args: str) -> None:
                 arch=args.arch,
                 checkpoint=args.checkpoint or None,
                 split=args.split,
+                fold=args.fold,
             )
         )
     elif action == "eval-kvasir-cams":

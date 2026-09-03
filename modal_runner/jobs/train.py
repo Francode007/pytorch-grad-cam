@@ -19,6 +19,7 @@ def _gpu_train_args(
     amp: bool,
     amp_dtype: str,
     compile_model: bool,
+    fold: Optional[int] = None,
 ) -> List[str]:
     args: List[str] = [
         "--data-root", data_root,
@@ -30,6 +31,8 @@ def _gpu_train_args(
         "--device", "cuda",
         "--num-workers", "8",
     ]
+    if fold is not None:
+        args.extend(["--fold", str(fold)])
     if amp:
         args.extend(["--amp", "--amp-dtype", amp_dtype])
     if compile_model:
@@ -49,7 +52,7 @@ def train_kvasir(
     output_dir: Optional[str] = None,
     extra_args: Optional[Sequence[str]] = None,
 ) -> str:
-    """Train one Kvasir classifier; checkpoints land under /vol/runs/kvasir."""
+    """Train one Kvasir classifier → /vol/runs/kvasir/{arch}/seed{seed}/."""
     ensure_layout()
     configure_torch_home()
     if not KVASIR_ROOT.exists():
@@ -70,27 +73,32 @@ def train_kvasir(
     if extra_args:
         args.extend(extra_args)
     run_module("XAI_Enhancer_module.kvasir.train", args)
-    return f"Kvasir train done: arch={arch} seed={seed} -> {out}/{arch}"
+    return f"Kvasir train done: arch={arch} seed={seed} -> {out}/{arch}/seed{seed}"
 
 
 def train_kvasir_matrix(
     *,
     archs: Optional[Sequence[str]] = None,
-    seed: int = 42,
+    seeds: Optional[Sequence[int]] = None,
     epochs: int = 50,
     batch_size: int = 128,
 ) -> str:
-    """Train several Kvasir architectures sequentially."""
+    """Train Kvasir arches × seeds sequentially."""
     chosen = list(archs) if archs else list(KVASIR_ARCHS)
-    return "\n".join(
-        train_kvasir(arch=arch, seed=seed, epochs=epochs, batch_size=batch_size)
-        for arch in chosen
-    )
+    seed_list = list(seeds) if seeds else [42, 43, 44]
+    lines = []
+    for arch in chosen:
+        for seed in seed_list:
+            lines.append(
+                train_kvasir(arch=arch, seed=seed, epochs=epochs, batch_size=batch_size)
+            )
+    return "\n".join(lines)
 
 
 def train_ibs(
     *,
     arch: str = "resnet50",
+    fold: int = 0,
     seed: int = 42,
     epochs: int = 50,
     batch_size: int = 128,
@@ -100,7 +108,7 @@ def train_ibs(
     output_dir: Optional[str] = None,
     extra_args: Optional[Sequence[str]] = None,
 ) -> str:
-    """Train one IBS classifier; checkpoints land under /vol/runs/ibs."""
+    """Train one IBS fold → /vol/runs/ibs/{arch}/fold{fold}/."""
     ensure_layout()
     configure_torch_home()
     if not IBS_ROOT.exists():
@@ -117,23 +125,35 @@ def train_ibs(
         amp=amp,
         amp_dtype=amp_dtype,
         compile_model=compile_model,
+        fold=fold,
     )
     if extra_args:
         args.extend(extra_args)
     run_module("XAI_Enhancer_module.ibs.train", args)
-    return f"IBS train done: arch={arch} seed={seed} -> {out}/{arch}"
+    return f"IBS train done: arch={arch} fold={fold} -> {out}/{arch}/fold{fold}"
 
 
 def train_ibs_matrix(
     *,
     archs: Optional[Sequence[str]] = None,
+    folds: Optional[Sequence[int]] = None,
     seed: int = 42,
     epochs: int = 50,
     batch_size: int = 128,
 ) -> str:
-    """Train several IBS architectures sequentially."""
+    """Train IBS arches × folds sequentially."""
     chosen = list(archs) if archs else list(IBS_ARCHS)
-    return "\n".join(
-        train_ibs(arch=arch, seed=seed, epochs=epochs, batch_size=batch_size)
-        for arch in chosen
-    )
+    fold_list = list(folds) if folds else [0, 1, 2, 3, 4]
+    lines = []
+    for arch in chosen:
+        for fold in fold_list:
+            lines.append(
+                train_ibs(
+                    arch=arch,
+                    fold=fold,
+                    seed=seed,
+                    epochs=epochs,
+                    batch_size=batch_size,
+                )
+            )
+    return "\n".join(lines)
