@@ -87,7 +87,6 @@ def download_ibs(skip_if_present: bool = True, source: str = "kaggle") -> str:
     timeout=TIMEOUT_DOWNLOAD_S,
     cpu=4.0,
     memory=16384,
-    ephemeral_disk=1024 * 100,  # ~100 GiB scratch for unzip
 )
 def ingest_ibs_zip(zip_path: str = "") -> str:
     """Extract IBS from a zip already on the volume (bypass Kaggle)."""
