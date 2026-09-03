@@ -1,6 +1,5 @@
 """
-Download Kvasir-v2 (version 2 only) and create 80:20 train/val splits.
-Update .gitignore so dataset and .venv are not committed.
+Download Kvasir-v2 (version 2 only) and create train/val/test splits (70/10/20 by default).
 
 Run from the repository root (pytorch-grad-cam), e.g.:
   cd /path/to/pytorch-grad-cam
@@ -19,10 +18,14 @@ if str(_REPO_ROOT) not in sys.path:
 try:
     from XAI_Enhancer_module.kvasir.data import (
         download_kvasir_v2,
-        prepare_splits,
         KVASIR_CLASSES,
         FOLDER_TO_CLASS,
         _find_image_paths,
+    )
+    from XAI_Enhancer_module.common.splits import (
+        prepare_kvasir_splits,
+        write_split_summary,
+        deduplicate_across_splits,
     )
 except ModuleNotFoundError:
     print("Error: Could not import XAI_Enhancer_module. Run this script from the repository root:")
@@ -33,11 +36,14 @@ except ModuleNotFoundError:
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Download Kvasir-v2 and prepare 80:20 splits. Use --source kaggle for remote/server (requires Kaggle API credentials)."
+        description="Download Kvasir-v2 and prepare train/val/test splits (revision: 70/10/20)."
     )
     p.add_argument("--data-root", type=str, default="data", help="Parent directory for kvasir-v2")
-    p.add_argument("--val-ratio", type=float, default=0.2)
+    p.add_argument("--train-ratio", type=float, default=0.7)
+    p.add_argument("--val-ratio", type=float, default=0.1)
+    p.add_argument("--test-ratio", type=float, default=0.2)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--dedupe", action="store_true", help="Reassign near-duplicate images across splits (imagehash)")
     p.add_argument(
         "--source",
         type=str,
@@ -99,8 +105,19 @@ def main():
             f"{extract_dir}/<class_name>/."
         )
     print(f"Using data root: {use_root} ({len(pairs)} images)")
-    train_file, val_file = prepare_splits(str(use_root), val_ratio=args.val_ratio, seed=args.seed)
-    print(f"Split files: {train_file}, {val_file}")
+    train_file, val_file, test_file = prepare_kvasir_splits(
+        str(use_root),
+        train_ratio=args.train_ratio,
+        val_ratio=args.val_ratio,
+        test_ratio=args.test_ratio,
+        seed=args.seed,
+    )
+    if args.dedupe:
+        moved = deduplicate_across_splits(str(use_root))
+        print(f"Near-duplicate reassignment: {moved} images moved to match canonical split")
+    summary = write_split_summary(str(use_root), dataset="kvasir", class_names=KVASIR_CLASSES)
+    print(f"Split files: {train_file}, {val_file}, {test_file}")
+    print(f"Split summary: {summary}")
 
 
 if __name__ == "__main__":

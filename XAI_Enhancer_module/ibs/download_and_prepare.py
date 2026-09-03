@@ -1,5 +1,5 @@
 """
-Download IBS pre-processed dataset and create 80:20 train/val splits.
+Download IBS pre-processed dataset and create patient-level k-fold splits.
 
 Run from the repository root (pytorch-grad-cam), e.g.:
   cd /path/to/pytorch-grad-cam
@@ -17,9 +17,12 @@ if str(_REPO_ROOT) not in sys.path:
 try:
     from XAI_Enhancer_module.ibs.data import (
         download_ibs,
-        prepare_splits,
         IBS_CLASSES,
         _find_image_paths,
+    )
+    from XAI_Enhancer_module.common.splits import (
+        prepare_ibs_patient_folds,
+        write_split_summary,
     )
 except ModuleNotFoundError:
     print("Error: Could not import XAI_Enhancer_module. Run this script from the repository root:")
@@ -30,11 +33,11 @@ except ModuleNotFoundError:
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Download IBS pre-processed dataset and prepare 80:20 splits. "
-        "Use --source kaggle for remote/server (requires Kaggle API credentials)."
+        description="Download IBS dataset and prepare patient-level k-fold splits."
     )
     p.add_argument("--data-root", type=str, default="data", help="Parent directory for IBS-preprocessed-dataset")
-    p.add_argument("--val-ratio", type=float, default=0.2)
+    p.add_argument("--n-folds", type=int, default=5)
+    p.add_argument("--inner-val-ratio", type=float, default=0.15)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument(
         "--source",
@@ -95,8 +98,15 @@ def main():
             f"{extract_dir}/<class_name>/."
         )
     print(f"Using data root: {use_root} ({len(pairs)} images)")
-    train_file, val_file = prepare_splits(str(use_root), val_ratio=args.val_ratio, seed=args.seed)
-    print(f"Split files: {train_file}, {val_file}")
+    fold_paths = prepare_ibs_patient_folds(
+        str(use_root),
+        n_folds=args.n_folds,
+        seed=args.seed,
+        inner_val_ratio=args.inner_val_ratio,
+    )
+    summary = write_split_summary(str(use_root), dataset="ibs", class_names=IBS_CLASSES)
+    print(f"Created {len(fold_paths)} folds under {use_root / 'splits'}")
+    print(f"Split summary: {summary}")
 
 
 if __name__ == "__main__":

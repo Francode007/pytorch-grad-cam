@@ -149,7 +149,7 @@ def load_split_file(split_path: Path, data_root: Path) -> List[Tuple[Path, int]]
 
 
 class KvasirDataset(Dataset):
-    """Kvasir-v2 dataset using a splits file (train.txt / val.txt)."""
+    """Kvasir-v2 dataset using a splits file (train.txt / val.txt / test.txt)."""
 
     def __init__(
         self,
@@ -160,10 +160,10 @@ class KvasirDataset(Dataset):
     ):
         """
         Args:
-            data_root: Root directory containing class-named folders (or where split paths are relative to).
-            split: 'train' or 'val'.
+            data_root: Root directory containing class-named folders.
+            split: 'train', 'val', or 'test'.
             transform: Applied to PIL image.
-            splits_dir: Directory containing train.txt/val.txt; default data_root/splits.
+            splits_dir: Directory containing split files; default data_root/splits.
         """
         self.data_root = Path(data_root)
         self.split = split

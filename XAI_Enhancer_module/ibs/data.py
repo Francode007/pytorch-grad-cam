@@ -136,7 +136,7 @@ def load_split_file(split_path: Path, data_root: Path) -> List[Tuple[Path, int]]
 
 
 class IBSDataset(Dataset):
-    """IBS pre-processed dataset using a splits file (train.txt / val.txt)."""
+    """IBS pre-processed dataset using a splits file (train.txt / val.txt / test.txt)."""
 
     def __init__(
         self,
@@ -144,12 +144,15 @@ class IBSDataset(Dataset):
         split: str = "train",
         transform: Optional[T.Compose] = None,
         splits_dir: Optional[str] = None,
+        fold: Optional[int] = None,
     ):
         self.data_root = Path(data_root)
         self.split = split
         self.transform = transform
         if splits_dir is None:
             splits_dir = self.data_root / "splits"
+            if fold is not None:
+                splits_dir = splits_dir / f"fold{fold}"
         else:
             splits_dir = Path(splits_dir)
         split_file = splits_dir / f"{split}.txt"
