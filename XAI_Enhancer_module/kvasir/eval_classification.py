@@ -11,7 +11,6 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 

@@ -141,6 +141,8 @@ modal run -m modal_runner.app -- train-kvasir --arch resnet18 --smoke
 
 **Status:** code landed on `modal_kvasir` — launch GPU matrix next.
 
+**Codebase map (matrices, run dirs, eval):** [`PHASE2_CODEBASE.md`](PHASE2_CODEBASE.md)
+
 ### Code (landed)
 
 | Piece | Path | Notes |

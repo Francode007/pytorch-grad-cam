@@ -24,6 +24,9 @@ See [`ibs/metadata/README.md`](ibs/metadata/README.md). The numeric
 
 ## Training (Phase 2)
 
+Deep dive (what each matrix cell is, call graph, overrides):
+[`PHASE2_CODEBASE.md`](PHASE2_CODEBASE.md).
+
 ```bash
 # Kvasir — one seed (best ckpt by val macro-F1 → runs/kvasir/{arch}/seed{seed}/)
 python -m XAI_Enhancer_module.kvasir.train --arch resnet50 --data-root data/kvasir-v2 --seed 42
