@@ -45,27 +45,33 @@ modal volume get xai-enhancer-vol /runs ./modal_artifacts/runs
 
 ---
 
-## Phase 1 — Splits & protocol (P0) — **run now**
+## Phase 1 — Splits & protocol (P0)
 
 **Goal (R3-1):** Kvasir train/val/test 70/10/20 + pHash near-dup guard; IBS patient-level folds when IDs exist; split-summary CSVs.
 
-### 1A. Kvasir splits (ready)
+**Status:** 1A ✅ completed · 1B next · 1C optional
+
+### 1A. Kvasir splits — ✅ completed (2026-09-03)
+
+Done on Modal volume `xai-enhancer-vol`: stratified **70/10/20** (seed=42) + pHash Hamming ≤ 6 near-dup reassignment; smoke summary OK.
+
+| Split | Images (post-dedupe) |
+|-------|---------------------:|
+| train | 5491 |
+| val   | 921 |
+| test  | 1588 |
+| **total** | **8000** |
+
+Near-dups: 979 pairs, 414 images moved, 258 components (see D-M3).
+
+Re-run only if you intentionally want to regenerate splits:
 
 ```bash
-# Rewrite 70/10/20 + pHash Hamming ≤ 6 (idempotent; overwrites splits/)
 modal run -m modal_runner.app -- prepare-kvasir-splits --seed 42
-
-# Without near-dup pass (faster debug only):
-# modal run -m modal_runner.app -- prepare-kvasir-splits --no-dedupe --seed 42
-
-# Smoke: IBS filename audit + print Kvasir summary CSV
 modal run -m modal_runner.app -- smoke-splits
-
-# Optional: confirm volume layout
-modal run -m modal_runner.app -- status
 ```
 
-Fetch the dataset table locally:
+Fetch the dataset table locally (if not already under `modal_artifacts/`):
 
 ```bash
 modal volume get xai-enhancer-vol \
@@ -81,26 +87,28 @@ modal volume get xai-enhancer-vol \
   ./modal_artifacts/near_duplicates.csv
 ```
 
-**Acceptance:** `train+val+test = 8000`; summary CSV has 8 classes; PROTOCOL records seed=42 and dedupe counts.
+**Acceptance (met):** `train+val+test = 8000`; summary CSV has 8 classes; PROTOCOL records seed=42 and dedupe counts.
 
-### 1B. IBS folds (blocked until groups CSV)
+### 1B. IBS patient folds
 
-Kaggle numeric names (`2882.jpg`) have **no** exam ID (D-M4). Until you have a mapping:
+Source: private Kaggle [`franchisn/ibs-dataset`](https://www.kaggle.com/datasets/franchisn/ibs-dataset)
+flattened to `/vol/data/IBS-patient-dataset`. Exam map is bundled at
+`XAI_Enhancer_module/ibs/metadata/ibs_groups.csv` (copied to `/vol/data/ibs_groups.csv`).
 
 ```bash
-# After you obtain ibs_groups.csv (Dryad / data owner):
-modal volume put xai-enhancer-vol ./ibs_groups.csv /data/ibs_groups.csv
-
-modal run -m modal_runner.app -- prepare-ibs-folds \
-  --groups-csv /vol/data/ibs_groups.csv --n-folds 5 --seed 42
+modal run -m modal_runner.app -- download-ibs-patient
+modal run -m modal_runner.app -- prepare-ibs-folds --n-folds 5 --seed 42
 
 modal volume get xai-enhancer-vol \
-  /data/IBS-preprocessed-dataset/splits/split_summary_ibs.csv \
+  /data/IBS-patient-dataset/splits/split_summary_ibs.csv \
   ./modal_artifacts/split_summary_ibs.csv
 ```
 
-**Acceptance:** no group ID in two splits of the same fold; summary has `n_patients_*` columns.
+**Acceptance:** 126 exam groups; no `group_id` in two splits of the same fold;
+summary has `n_patients_*` columns.
 
+> Do **not** use the numeric `pre-processed-ibs` dump for R3-1 — it has no
+> recoverable patient/exam IDs (D-M4).
 ### 1C. Optional smoke train (sanity check GPU path)
 
 ```bash
@@ -249,7 +257,7 @@ Until those actions exist, run modules inside a one-off Modal function or extend
 | Tier (`experiment-plan.md`) | Phase | Modal actions available today |
 |-----------------------------|-------|-------------------------------|
 | 0.4 Kvasir near-dup | 1 | `prepare-kvasir-splits` |
-| 0.1–0.2 IBS IDs / counts | 1 | `smoke-splits`, `prepare-ibs-folds` (needs CSV) |
+| 0.1–0.2 IBS IDs / counts | 1 | `download-ibs-patient`, `prepare-ibs-folds`, `smoke-splits` |
 | 1.1–1.3 Train + classifier table | 2 | `train-kvasir`, `train-kvasir-matrix`, `train-ibs`, `eval-*-cls` (matrix/seeds/F1 pending) |
 | 1.4 + 2.1 Table 1 / CAM | 3 | `eval-*-cams` (per-image log / uniform / layer-set pending) |
 | 2.2 Stats / win-tie-loss | 4 | pull + `analysis/stats.py` (to build) |
@@ -257,33 +265,27 @@ Until those actions exist, run modules inside a one-off Modal function or extend
 
 ---
 
-## Recommended order **right now** (Phase 1)
+## Recommended order **right now** (Phase 1B)
 
-Copy-paste block:
+1A is done. Next: IBS patient-level folds, then optional GPU smoke.
 
 ```bash
 cd /path/to/pytorch-grad-cam
 git checkout modal_kvasir
-git pull   # if you use a remote
 
-# 1) Confirm volume
 modal run -m modal_runner.app -- status
+modal run -m modal_runner.app -- download-ibs-patient
+modal run -m modal_runner.app -- prepare-ibs-folds --n-folds 5 --seed 42
 
-# 2) Kvasir protocol splits + near-dup
-modal run -m modal_runner.app -- prepare-kvasir-splits --seed 42
-
-# 3) Print / verify summaries
-modal run -m modal_runner.app -- smoke-splits
-
-# 4) Save artifacts locally for the manuscript dataset table
 mkdir -p modal_artifacts
-modal volume get xai-enhancer-vol /data/kvasir-v2/splits ./modal_artifacts/kvasir_splits
+modal volume get xai-enhancer-vol \
+  /data/IBS-patient-dataset/splits ./modal_artifacts/ibs_splits
 
-# 5) Optional GPU smoke (can run while you email the IBS data owner)
+# Optional GPU smoke
 modal run -m modal_runner.app -- train-kvasir --arch resnet18 --smoke
 ```
 
-**In parallel (admin, Day 1):** email IBS data owner for patient mapping; email editor for extension (patient-level re-split + seeds).
+**Admin:** email editor for extension (patient-level re-split + seeds) if not already sent.
 
 ---
 
