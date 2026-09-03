@@ -50,6 +50,110 @@ A100_DEFAULT_BATCH = {
 }
 
 
+def _locked_batch_file(output_dir: str | Path, explicit: str = "") -> Path:
+    if explicit:
+        return Path(explicit)
+    return Path(output_dir) / "locked_batch_sizes.json"
+
+
+def _locked_batch_shard(lock_path: Path, arch: str) -> Path:
+    """Per-arch shard so parallel A100s do not race on one JSON file."""
+    return lock_path.parent / "locked_batch_sizes.d" / f"{arch}.json"
+
+
+def _load_locked_batch(path: Path, arch: str) -> Optional[int]:
+    shard = _locked_batch_shard(path, arch)
+    for candidate in (path, shard):
+        if not candidate.exists():
+            continue
+        try:
+            data = json.loads(candidate.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if candidate == shard:
+            try:
+                n = int(data.get("batch_size"))
+                return n if n > 0 else None
+            except (TypeError, ValueError, AttributeError):
+                continue
+        batches = data.get("batch_sizes") if isinstance(data, dict) else data
+        if not isinstance(batches, dict):
+            continue
+        val = batches.get(arch)
+        try:
+            n = int(val)
+            return n if n > 0 else None
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _update_locked_batch_file(
+    path: Path,
+    *,
+    arch: str,
+    batch_size: int,
+    seed: int,
+    source: str,
+) -> None:
+    """Write a per-arch shard; wave summarize merges into locked_batch_sizes.json."""
+    shard = _locked_batch_shard(path, arch)
+    shard.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "arch": arch,
+        "batch_size": int(batch_size),
+        "seed": seed,
+        "source": source,
+        "updated_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    shard.write_text(json.dumps(payload, indent=2) + "\n")
+    # Best-effort merge into the shared file (may race; shards are authoritative mid-wave).
+    try:
+        merged: Dict[str, Any] = {"batch_sizes": {}}
+        if path.exists():
+            existing = json.loads(path.read_text())
+            if isinstance(existing, dict):
+                merged = existing
+                merged.setdefault("batch_sizes", {})
+        for p in sorted(shard.parent.glob("*.json")):
+            try:
+                d = json.loads(p.read_text())
+                merged["batch_sizes"][d["arch"]] = int(d["batch_size"])
+            except Exception:
+                continue
+        merged["batch_sizes"][arch] = int(batch_size)
+        merged["updated_utc"] = datetime.now(timezone.utc).isoformat()
+        merged["source_seed"] = seed
+        merged["source"] = source
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(merged, indent=2) + "\n")
+    except Exception as e:
+        print(f"[batch] shared lock merge skipped: {e}", flush=True)
+
+
+def _write_args(
+    out_dir: Path,
+    args,
+    *,
+    batch_size: int,
+    batch_size_source: str,
+    batch_size_locked: bool,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Path:
+    args.batch_size = int(batch_size)
+    meta = {
+        "dataset": "kvasir",
+        "checkpoint_metric": "val_f1_macro",
+        "batch_size_resolved": int(batch_size),
+        "batch_size_source": batch_size_source,
+        "batch_size_locked": bool(batch_size_locked),
+        "locked_batch_file": str(getattr(args, "locked_batch_file", "") or ""),
+    }
+    if extra:
+        meta.update(extra)
+    return write_args_json(out_dir, args, extra=meta)
+
+
 class _Tee:
     """Write to multiple streams (stdout + train.log)."""
 
@@ -225,12 +329,23 @@ def parse_args():
         "--batch-size",
         type=int,
         default=0,
-        help="0 = use A100_DEFAULT_BATCH[arch] (or --auto-batch-size)",
+        help="0 = locked file / auto-probe / A100_DEFAULT_BATCH[arch]",
     )
     p.add_argument(
         "--auto-batch-size",
         action="store_true",
-        help="Probe max batch that fits; target ~82%% GPU memory",
+        help="Probe max batch if not locked (target ~82%% GPU memory)",
+    )
+    p.add_argument(
+        "--force-auto-batch",
+        action="store_true",
+        help="Ignore locked_batch_sizes.json and re-probe",
+    )
+    p.add_argument(
+        "--locked-batch-file",
+        type=str,
+        default="",
+        help="JSON lock file (default: {output-dir}/locked_batch_sizes.json)",
     )
     p.add_argument("--target-mem-frac", type=float, default=0.82)
     p.add_argument("--lr", type=float, default=1e-4)
@@ -407,23 +522,60 @@ def main():
     model = model.to(device)
 
     amp_dtype = getattr(torch, args.amp_dtype, torch.bfloat16)
-    batch_size = args.batch_size
-    if batch_size <= 0:
-        batch_size = A100_DEFAULT_BATCH.get(args.arch, 128)
+    lock_path = _locked_batch_file(args.output_dir, args.locked_batch_file)
+    args.locked_batch_file = str(lock_path)
 
-    if args.auto_batch_size and device.type == "cuda":
-        print(f"[auto-batch] probing for arch={args.arch} target_mem={args.target_mem_frac}", flush=True)
-        batch_size = find_max_batch_size(
-            model,
-            device,
-            amp=args.amp,
-            amp_dtype=amp_dtype,
-            start=max(32, A100_DEFAULT_BATCH.get(args.arch, 128) // 4),
-            max_bs=1024,
-            target_mem_frac=args.target_mem_frac,
-        )
+    batch_size = int(args.batch_size)
+    batch_size_source = "cli"
+    if batch_size > 0:
+        batch_size_source = "cli"
+    else:
+        locked = None if args.force_auto_batch else _load_locked_batch(lock_path, args.arch)
+        if locked is not None:
+            batch_size = locked
+            batch_size_source = "locked"
+            print(f"[batch] using locked {args.arch}={batch_size} from {lock_path}", flush=True)
+        elif args.auto_batch_size and device.type == "cuda":
+            print(
+                f"[auto-batch] probing for arch={args.arch} target_mem={args.target_mem_frac}",
+                flush=True,
+            )
+            batch_size = find_max_batch_size(
+                model,
+                device,
+                amp=args.amp,
+                amp_dtype=amp_dtype,
+                start=max(32, A100_DEFAULT_BATCH.get(args.arch, 128) // 4),
+                max_bs=1024,
+                target_mem_frac=args.target_mem_frac,
+            )
+            batch_size_source = "auto-probe"
+        else:
+            batch_size = A100_DEFAULT_BATCH.get(args.arch, 128)
+            batch_size_source = "default"
+
     args.batch_size = batch_size
-    print(f"Using batch_size={batch_size}", flush=True)
+    print(f"Using batch_size={batch_size} (source={batch_size_source})", flush=True)
+
+    # Persist resolved size immediately; mark locked after first epoch confirms it
+    # (or immediately if we already loaded from the shared lock file).
+    _write_args(
+        out_dir,
+        args,
+        batch_size=batch_size,
+        batch_size_source=batch_size_source,
+        batch_size_locked=(batch_size_source == "locked"),
+        extra={"started_utc": datetime.now(timezone.utc).isoformat()},
+    )
+    if batch_size_source == "auto-probe":
+        _update_locked_batch_file(
+            lock_path,
+            arch=args.arch,
+            batch_size=batch_size,
+            seed=args.seed,
+            source="auto-probe-pre-epoch",
+        )
+        _commit_volume()
 
     train_loader, val_loader = create_loaders(args, data_root, batch_size)
     print(f"train steps/epoch≈{len(train_loader)}  val batches={len(val_loader)}", flush=True)
@@ -474,21 +626,12 @@ def main():
         except Exception as e:
             print(f"torch.compile skipped: {e}", flush=True)
 
-    write_args_json(
-        out_dir,
-        args,
-        extra={
-            "dataset": "kvasir",
-            "checkpoint_metric": "val_f1_macro",
-            "batch_size_resolved": batch_size,
-            "started_utc": datetime.now(timezone.utc).isoformat(),
-        },
-    )
     _commit_volume()
     _log_gpu("init")
 
     mid_epoch = max(1, args.epochs // 2)
     t0 = time.time()
+    batch_locked = batch_size_source == "locked"
 
     for epoch in range(start_epoch, args.epochs + 1):
         train_loss = train_epoch(model, train_loader, criterion, optimizer, device, scaler, args, epoch)
@@ -505,6 +648,7 @@ def main():
             "val_f1_macro": val_m["f1_macro"],
             "val_auroc": val_m.get("auroc"),
             "elapsed_s": time.time() - t0,
+            "batch_size": batch_size,
         }
         mem = _gpu_mem_stats()
         if mem:
@@ -516,6 +660,37 @@ def main():
             flush=True,
         )
         _log_gpu(f"epoch{epoch}")
+
+        # After first completed epoch under real load, lock batch size into args.json
+        # and the shared lock file (seeds 43/44 reuse these values).
+        if epoch == 1 or (not batch_locked and epoch == start_epoch):
+            batch_locked = True
+            _write_args(
+                out_dir,
+                args,
+                batch_size=batch_size,
+                batch_size_source=batch_size_source,
+                batch_size_locked=True,
+                extra={
+                    "locked_after_epoch": epoch,
+                    "locked_utc": datetime.now(timezone.utc).isoformat(),
+                    "gpu_used_frac_at_lock": mem.get("used_frac") if mem else None,
+                    "started_utc": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            _update_locked_batch_file(
+                lock_path,
+                arch=args.arch,
+                batch_size=batch_size,
+                seed=args.seed,
+                source=f"epoch{epoch}-confirmed",
+            )
+            print(
+                f"[batch] locked arch={args.arch} batch_size={batch_size} "
+                f"→ args.json + {lock_path}",
+                flush=True,
+            )
+            _commit_volume()
 
         # Always refresh latest (full trainer state → resume)
         _save_trainer_ckpt(

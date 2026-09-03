@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List, Optional, Sequence
 
 from modal_runner.config import (
@@ -31,6 +32,7 @@ def _gpu_train_args(
     resume: str = "",
     auto_batch: bool = False,
     a100: bool = True,
+    locked_batch_file: Optional[str] = None,
 ) -> List[str]:
     args: List[str] = [
         "--data-root", data_root,
@@ -50,10 +52,13 @@ def _gpu_train_args(
         args.append("--compile")
     if a100:
         args.append("--a100")
-    if auto_batch or batch_size <= 0:
+    # Prefer locked_batch_sizes.json when present; only probe if unlocked.
+    if auto_batch:
         args.append("--auto-batch-size")
     if resume:
         args.extend(["--resume", resume])
+    if locked_batch_file:
+        args.extend(["--locked-batch-file", locked_batch_file])
     return args
 
 
@@ -91,6 +96,7 @@ def train_kvasir(
         resume=resume,
         auto_batch=auto_batch,
         a100=True,
+        locked_batch_file=str(Path(out) / "locked_batch_sizes.json"),
     )
     if extra_args:
         args.extend(extra_args)

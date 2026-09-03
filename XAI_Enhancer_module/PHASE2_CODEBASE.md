@@ -69,16 +69,22 @@ Also written every run:
 | File | Purpose |
 |------|---------|
 | `train.log` | Tee of stdout/stderr (always on volume) |
+| `args.json` | CLI + **`batch_size_resolved` / `batch_size_locked`** after epoch 1 |
 | `checkpoint_latest.pth` | Full trainer state each epoch (resume) |
 | `checkpoint_mid.pth` | Full state at `epochs // 2` |
 | `metrics.json` | Per-epoch metrics + optional `gpu_used_frac` |
 | `best.pth` / `last.pth` | Best val F1 / final weights |
 
-Resume one failed arch:
+Shared across a seed wave:
+
+| File | Purpose |
+|------|---------|
+| `/vol/runs/kvasir/locked_batch_sizes.json` | Arch → batch size (seed 43/44 reuse; no re-probe) |
+| `/vol/runs/kvasir/waves/seed{S}/wave_summary.{json,txt}` | Cost + metrics table |
+| `/vol/runs/kvasir/waves/seed{S}/wave.log` | Append-only wave completion log |
 
 ```bash
-modal run --detach -m modal_runner.app -- \
-  train-kvasir --arch vgg16 --seed 42 --resume auto
+modal run -m modal_runner.app -- summarize-kvasir-seed --seed 42
 ```
 
 ---

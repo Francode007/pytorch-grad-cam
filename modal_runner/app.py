@@ -186,6 +186,25 @@ def status() -> str:
     return volume_summary()
 
 
+@app.function(image=image, volumes=_VOLUMES, timeout=600, cpu=1.0, memory=2048)
+def summarize_kvasir_seed(
+    seed: int = 42,
+    archs: Optional[List[str]] = None,
+    train_results: Optional[List[str]] = None,
+) -> str:
+    """
+    After a seed wave: print cost/metrics table, lock batch sizes, save
+    /vol/runs/kvasir/waves/seed{seed}/wave_summary.{json,txt} + wave.log.
+    """
+    from modal_runner.jobs.summarize import summarize_kvasir_seed as _job
+
+    ensure_layout()
+    volume.reload()
+    msg = _job(seed=seed, archs=archs, train_results=train_results)
+    _commit()
+    return msg
+
+
 # ---------------------------------------------------------------------------
 # GPU jobs — train / eval
 # ---------------------------------------------------------------------------
@@ -489,6 +508,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     tks.add_argument("--smoke", action="store_true")
 
+    sks = sub.add_parser(
+        "summarize-kvasir-seed",
+        help="Print/save cost+metrics table for a finished seed wave (volume)",
+    )
+    sks.add_argument("--seed", type=int, required=True)
+    sks.add_argument("--archs", nargs="+", default=None)
+
     tkm = sub.add_parser(
         "train-kvasir-matrix",
         help="Legacy sequential arches×seeds on ONE GPU (prefer train-kvasir-seed)",
@@ -623,11 +649,18 @@ def main(*cli_args: str) -> None:
                 return_exceptions=True,
             )
         )
+        train_lines: List[str] = []
         for arch, res in zip(archs, results):
             if isinstance(res, Exception):
-                print(f"FAIL  arch={arch} seed={args.seed}: {res}", flush=True)
+                line = f"FAIL  arch={arch} seed={args.seed}: {res}"
+                print(line, flush=True)
+                train_lines.append(line)
             else:
-                print(f"OK    {res}", flush=True)
+                line = f"OK    {res}"
+                print(line, flush=True)
+                train_lines.append(str(res))
+        # Always write wave log + cost table (even if some arches failed).
+        print(summarize_kvasir_seed.remote(seed=args.seed, archs=archs, train_results=train_lines))
         n_fail = sum(1 for r in results if isinstance(r, Exception))
         if n_fail:
             raise SystemExit(
@@ -636,6 +669,13 @@ def main(*cli_args: str) -> None:
                 f"train-kvasir --arch <arch> --seed {args.seed} --resume auto"
             )
         print(f"All {len(archs)} arches finished for seed={args.seed}.", flush=True)
+    elif action == "summarize-kvasir-seed":
+        print(
+            summarize_kvasir_seed.remote(
+                seed=args.seed,
+                archs=args.archs,
+            )
+        )
     elif action == "train-kvasir-matrix":
         print(
             train_kvasir_matrix.remote(

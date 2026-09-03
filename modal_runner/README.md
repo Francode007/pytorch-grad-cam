@@ -191,6 +191,29 @@ modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 43
 modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 44
 ```
 
+After each wave, Modal writes a cost/metrics table and locks batch sizes:
+
+```
+/vol/runs/kvasir/waves/seed{seed}/wave_summary.json
+/vol/runs/kvasir/waves/seed{seed}/wave_summary.txt
+/vol/runs/kvasir/waves/seed{seed}/wave.log
+/vol/runs/kvasir/locked_batch_sizes.json
+```
+
+Re-print / re-save a finished wave anytime:
+
+```bash
+modal run -m modal_runner.app -- summarize-kvasir-seed --seed 42
+```
+
+Pull summaries locally:
+
+```bash
+modal volume get xai-enhancer-vol /runs/kvasir/waves ./modal_artifacts/kvasir_waves
+modal volume get xai-enhancer-vol /runs/kvasir/locked_batch_sizes.json \
+  ./modal_artifacts/locked_batch_sizes.json
+```
+
 Resume one arch if a container dies:
 
 ```bash
@@ -199,7 +222,8 @@ modal run --detach -m modal_runner.app -- \
 ```
 
 Logs + checkpoints live on the volume under `/vol/runs/kvasir/{arch}/seed{seed}/`
-(`train.log`, `checkpoint_latest.pth`, `checkpoint_mid.pth`, `best.pth`).
+(`train.log`, `args.json` with locked `batch_size`, `checkpoint_latest.pth`,
+`checkpoint_mid.pth`, `best.pth`).
 
 ### Classification metrics (test split)
 
