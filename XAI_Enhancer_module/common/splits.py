@@ -30,7 +30,12 @@ _CLASS_FOLDERS = frozenset({
 })
 
 # exam/session prefix before a frame index: exam123_01.jpg, P12-frame-03.jpg
+# Proc/CNVP IDs from franchisn/ibs-dataset: Proc202001290027_1_1.JPG
 _GROUP_PATTERNS = [
+    re.compile(
+        r"^(?P<gid>Proc\d{8}\d+|CNVP\d+)(?:_\d+)+\.(jpe?g|png)$",
+        re.I,
+    ),
     re.compile(r"^(?P<gid>.+)[_-]frame[_-]?(?P<frame>\d+)\.(jpe?g|png)$", re.I),
     re.compile(r"^(?P<gid>[^_/\\]+)[_-](?P<frame>\d+)\.(jpe?g|png)$", re.I),
 ]

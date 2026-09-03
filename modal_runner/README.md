@@ -21,7 +21,9 @@ Persistent storage is a single Modal Volume (`xai-enhancer-vol`) mounted at `/vo
 | Path | Contents |
 |------|----------|
 | `/vol/data/kvasir-v2` | Kvasir-v2 images + splits |
-| `/vol/data/IBS-preprocessed-dataset` | IBS images (+ folds when ready) |
+| `/vol/data/IBS-patient-dataset` | Patient-aware IBS (revision default) + folds |
+| `/vol/data/ibs_groups.csv` | Exam-id map (from bundled metadata) |
+| `/vol/data/IBS-preprocessed-dataset` | Legacy numeric dump (optional) |
 | `/vol/models` | `TORCH_HOME` (ImageNet pretrained) |
 | `/vol/runs/kvasir` | Kvasir checkpoints + eval outputs |
 | `/vol/runs/ibs` | IBS checkpoints + eval outputs |
@@ -133,34 +135,26 @@ modal run -m modal_runner.app -- prepare-kvasir-splits
 modal run -m modal_runner.app -- prepare-kvasir-splits --no-dedupe
 ```
 
-### 2.4 Download IBS (CPU + Kaggle secret)
+### 2.4 Download IBS patient dataset (CPU + Kaggle secret)
+
+Uses private [`franchisn/ibs-dataset`](https://www.kaggle.com/datasets/franchisn/ibs-dataset)
+(unnormalized, patient folders) → `/vol/data/IBS-patient-dataset` and installs
+bundled `ibs_groups.csv` (126 exam groups).
 
 ```bash
-modal run -m modal_runner.app -- download-ibs
+modal run -m modal_runner.app -- download-ibs-patient
+modal run -m modal_runner.app -- prepare-ibs-folds --seed 42
 ```
 
-If Kaggle returns **403 Forbidden**, either accept the dataset terms in the browser
-(same account as the Modal secret), or **upload your local zip** (recommended if you
-already have `data/IBS-preprocessed-dataset.zip`):
+Legacy numeric dump (`pre-processed-ibs`) has **no** exam IDs — only use if you
+need the old flat tree:
 
 ```bash
-# ~1.9 GB upload — run from the repo root
-modal volume put xai-enhancer-vol data/IBS-preprocessed-dataset.zip \
-  /data/IBS-preprocessed-dataset.zip
-
-modal run -m modal_runner.app -- ingest-ibs-zip
+modal run -m modal_runner.app -- download-ibs   # or ingest-ibs-zip after volume put
 ```
 
-Patient-level folds still need a groups CSV (see Phase 1 / D-M4). After you have one:
-
-```bash
-# Upload mapping onto the volume
-modal volume put xai-enhancer-vol ./ibs_groups.csv /data/ibs_groups.csv
-
-modal run -m modal_runner.app -- prepare-ibs-folds \
-  --groups-csv /vol/data/ibs_groups.csv
-```
-
+If `download-ibs-patient` returns **403**, open the dataset in a browser with the
+same Kaggle account as the Modal secret and accept terms, then retry.
 ### 2.5 Inspect the volume
 
 ```bash

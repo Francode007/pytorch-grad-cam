@@ -3,7 +3,9 @@ Modal runner for the XAI-Enhancer CMPB revision pipeline.
 
 Volume layout (mounted at /vol):
   /vol/data/kvasir-v2
-  /vol/data/IBS-preprocessed-dataset
+  /vol/data/IBS-patient-dataset      # patient-level (revision default)
+  /vol/data/IBS-preprocessed-dataset # legacy numeric dump (optional)
+  /vol/data/ibs_groups.csv
   /vol/data/Kvasir-SEG
   /vol/models          # TORCH_HOME (ImageNet pretrained weights)
   /vol/runs/kvasir
@@ -31,8 +33,14 @@ VOL_ROOT = Path("/vol")
 
 DATA_ROOT = VOL_ROOT / "data"
 KVASIR_ROOT = DATA_ROOT / "kvasir-v2"
-IBS_ROOT = DATA_ROOT / "IBS-preprocessed-dataset"
+# Patient-aware IBS tree (franchisn/ibs-dataset flattened) — used for R3-1 folds / train
+IBS_ROOT = DATA_ROOT / "IBS-patient-dataset"
+# Legacy flat numeric dump (franchisn/pre-processed-ibs); no recoverable exam IDs
+IBS_PREPROCESSED_ROOT = DATA_ROOT / "IBS-preprocessed-dataset"
 KVASIR_SEG_ROOT = DATA_ROOT / "Kvasir-SEG"
+# Bundled exam map (also copied onto the volume under /vol/data/)
+IBS_GROUPS_CSV_REPO = REPO_ROOT / "XAI_Enhancer_module" / "ibs" / "metadata" / "ibs_groups.csv"
+IBS_GROUPS_CSV_VOL = DATA_ROOT / "ibs_groups.csv"
 
 MODELS_ROOT = VOL_ROOT / "models"  # TORCH_HOME
 RUNS_ROOT = VOL_ROOT / "runs"

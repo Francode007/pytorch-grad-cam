@@ -104,7 +104,7 @@ def train_ibs(
     ensure_layout()
     configure_torch_home()
     if not IBS_ROOT.exists():
-        raise FileNotFoundError(f"Missing {IBS_ROOT}. Run download-ibs first.")
+        raise FileNotFoundError(f"Missing {IBS_ROOT}. Run download-ibs-patient first.")
 
     out = output_dir or str(IBS_RUNS)
     args = _gpu_train_args(

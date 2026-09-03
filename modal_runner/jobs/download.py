@@ -8,7 +8,14 @@ import zipfile
 from pathlib import Path
 from typing import Optional
 
-from modal_runner.config import DATA_ROOT, IBS_ROOT, KVASIR_ROOT
+from modal_runner.config import (
+    DATA_ROOT,
+    IBS_GROUPS_CSV_REPO,
+    IBS_GROUPS_CSV_VOL,
+    IBS_PREPROCESSED_ROOT,
+    IBS_ROOT,
+    KVASIR_ROOT,
+)
 from modal_runner.runtime import (
     configure_torch_home,
     ensure_kaggle_credentials,
@@ -22,16 +29,14 @@ Kaggle returned 403 Forbidden on dataset download.
 Most common fixes (in order):
   1. Open the dataset in a browser while logged into the SAME Kaggle account
      as your Modal secret, and click Download once (accepts terms):
+       https://www.kaggle.com/datasets/franchisn/ibs-dataset
        https://www.kaggle.com/datasets/franchisn/pre-processed-ibs
        https://www.kaggle.com/datasets/plhalvorsen/kvasir-v2-a-gastrointestinal-tract-dataset
   2. Recreate the API token (Kaggle → Settings → Create New Token) and update
      the Modal secret:
        modal secret delete kaggle-credentials
        modal secret create kaggle-credentials KAGGLE_USERNAME=... KAGGLE_KEY=...
-  3. Bypass Kaggle: upload your local zip to the Modal volume, then ingest:
-       modal volume put xai-enhancer-vol data/IBS-preprocessed-dataset.zip \\
-         /data/IBS-preprocessed-dataset.zip
-       modal run -m modal_runner.app -- ingest-ibs-zip
+  3. Bypass Kaggle for the legacy numeric dump: upload zip then ingest-ibs-zip.
 """
 
 
@@ -54,17 +59,86 @@ def download_kvasir(*, skip_if_present: bool = True, source: str = "kaggle") -> 
     return f"Kvasir ready at {KVASIR_ROOT} ({_count_images(KVASIR_ROOT)} images)"
 
 
+def download_ibs_patient(*, skip_if_present: bool = True, force: bool = False) -> str:
+    """
+    Download ``franchisn/ibs-dataset``, flatten to ``IBS_ROOT``, install groups CSV.
+
+    This is the revision default (patient/exam IDs). The numeric pre-processed
+    dump is handled separately by ``download_ibs`` / ``ingest_ibs_zip``.
+    """
+    ensure_layout()
+    ensure_kaggle_credentials()
+    if skip_if_present and not force and _has_ibs_patient():
+        _ensure_groups_csv_on_volume()
+        return (
+            f"IBS patient dataset already at {IBS_ROOT} "
+            f"({_count_images(IBS_ROOT)} images); groups CSV -> {IBS_GROUPS_CSV_VOL}"
+        )
+
+    raw_root = DATA_ROOT / "ibs-raw-unnormalized"
+    if force and raw_root.exists():
+        shutil.rmtree(raw_root)
+    raw_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        from kaggle.api.kaggle_api_extended import KaggleApi
+
+        api = KaggleApi()
+        api.authenticate()
+        print("Downloading franchisn/ibs-dataset ...", flush=True)
+        api.dataset_download_files(
+            "franchisn/ibs-dataset",
+            path=str(raw_root),
+            unzip=True,
+            quiet=False,
+        )
+    except Exception as e:
+        if "403" in str(e):
+            raise RuntimeError(_KAGGLE_403_HINT) from e
+        raise
+
+    nested = raw_root / "Endoscope-Normal-IBS-Classification-Data"
+    if not nested.is_dir():
+        # zip may extract with an extra top folder
+        candidates = [p for p in raw_root.rglob("Endoscope-Normal-IBS-Classification-Data") if p.is_dir()]
+        if not candidates:
+            raise FileNotFoundError(
+                f"Expected Endoscope-Normal-IBS-Classification-Data under {raw_root}"
+            )
+        nested = candidates[0]
+
+    args = [
+        "--raw-root",
+        str(nested),
+        "--out-root",
+        str(IBS_ROOT),
+        "--out-csv",
+        str(IBS_GROUPS_CSV_VOL),
+        "--force",
+        "--copy",
+    ]
+    run_module("XAI_Enhancer_module.ibs.metadata.build_ibs_groups_csv", args)
+    _ensure_groups_csv_on_volume(prefer_built=IBS_GROUPS_CSV_VOL)
+
+    n = _count_images(IBS_ROOT)
+    return f"IBS patient dataset ready at {IBS_ROOT} ({n} images); groups={IBS_GROUPS_CSV_VOL}"
+
+
 def download_ibs(*, skip_if_present: bool = True, source: str = "kaggle") -> str:
     """
-    Download IBS pre-processed dataset only (no patient folds).
+    Download legacy IBS pre-processed (numeric) dataset only (no patient folds).
 
-    Prefer ``ingest_ibs_zip`` if Kaggle returns 403 and you already have the zip locally.
+    Prefer ``download_ibs_patient`` for R3-1. Prefer ``ingest_ibs_zip`` if Kaggle
+    returns 403 and you already have the zip locally.
     """
     ensure_layout()
     if source != "zip":
         ensure_kaggle_credentials()
-    if skip_if_present and _has_ibs():
-        return f"IBS already present at {IBS_ROOT} ({_count_images(IBS_ROOT)} images)"
+    if skip_if_present and _has_ibs_preprocessed():
+        return (
+            f"IBS preprocessed already at {IBS_PREPROCESSED_ROOT} "
+            f"({_count_images(IBS_PREPROCESSED_ROOT)} images)"
+        )
 
     from XAI_Enhancer_module.ibs.data import download_ibs as _download_ibs
 
@@ -78,23 +152,21 @@ def download_ibs(*, skip_if_present: bool = True, source: str = "kaggle") -> str
         if "403" in str(e):
             raise RuntimeError(_KAGGLE_403_HINT) from e
         raise
-    return f"IBS ready at {path} ({_count_images(Path(path))} images)"
+    return f"IBS preprocessed ready at {path} ({_count_images(Path(path))} images)"
 
 
 def ingest_ibs_zip(zip_path: Optional[str] = None) -> str:
     """
-    Extract IBS from a zip already on the Modal volume.
+    Extract legacy numeric IBS from a zip already on the Modal volume.
 
     Default zip location: ``/vol/data/IBS-preprocessed-dataset.zip``
-
-    Upload from your laptop first::
-
-        modal volume put xai-enhancer-vol data/IBS-preprocessed-dataset.zip \\
-          /data/IBS-preprocessed-dataset.zip
     """
     ensure_layout()
-    if _has_ibs():
-        return f"IBS already present at {IBS_ROOT} ({_count_images(IBS_ROOT)} images)"
+    if _has_ibs_preprocessed():
+        return (
+            f"IBS preprocessed already at {IBS_PREPROCESSED_ROOT} "
+            f"({_count_images(IBS_PREPROCESSED_ROOT)} images)"
+        )
 
     zp = Path(zip_path) if zip_path else DATA_ROOT / "IBS-preprocessed-dataset.zip"
     if not zp.exists():
@@ -116,11 +188,10 @@ def ingest_ibs_zip(zip_path: Optional[str] = None) -> str:
             zf.extractall(tmp_path)
         path = _ensure_ibs_structure(DATA_ROOT, tmp_path)
 
-    # Flatten accidental double nesting: .../IBS-preprocessed-dataset/IBS-preprocessed-dataset/IBS
-    nested = IBS_ROOT / "IBS-preprocessed-dataset"
-    if nested.is_dir() and not (IBS_ROOT / "IBS").is_dir():
+    nested = IBS_PREPROCESSED_ROOT / "IBS-preprocessed-dataset"
+    if nested.is_dir() and not (IBS_PREPROCESSED_ROOT / "IBS").is_dir():
         for child in nested.iterdir():
-            dest = IBS_ROOT / child.name
+            dest = IBS_PREPROCESSED_ROOT / child.name
             if not dest.exists():
                 shutil.move(str(child), str(dest))
         try:
@@ -128,14 +199,14 @@ def ingest_ibs_zip(zip_path: Optional[str] = None) -> str:
         except OSError:
             pass
 
-    if not _has_ibs():
+    if not _has_ibs_preprocessed():
         raise RuntimeError(
-            f"Extracted {zp} into {path} but could not find enough images under {IBS_ROOT}. "
-            "Check: modal volume ls xai-enhancer-vol /data"
+            f"Extracted {zp} into {path} but could not find enough images under "
+            f"{IBS_PREPROCESSED_ROOT}. Check: modal volume ls xai-enhancer-vol /data"
         )
 
-    n = _count_images(IBS_ROOT)
-    return f"IBS ingested from {zp} -> {IBS_ROOT} ({n} images)"
+    n = _count_images(IBS_PREPROCESSED_ROOT)
+    return f"IBS ingested from {zp} -> {IBS_PREPROCESSED_ROOT} ({n} images)"
 
 
 def download_models() -> str:
@@ -150,12 +221,34 @@ def download_models() -> str:
     return f"Models cached under {torch_home} ({n} .pth files)"
 
 
+def _ensure_groups_csv_on_volume(prefer_built: Optional[Path] = None) -> Path:
+    """Copy the bundled repo CSV onto the volume if missing."""
+    ensure_layout()
+    if prefer_built and prefer_built.exists():
+        if prefer_built.resolve() != IBS_GROUPS_CSV_VOL.resolve():
+            shutil.copy2(prefer_built, IBS_GROUPS_CSV_VOL)
+        return IBS_GROUPS_CSV_VOL
+    if IBS_GROUPS_CSV_VOL.exists():
+        return IBS_GROUPS_CSV_VOL
+    if not IBS_GROUPS_CSV_REPO.exists():
+        raise FileNotFoundError(
+            f"Bundled groups CSV missing: {IBS_GROUPS_CSV_REPO}. "
+            "Rebuild with build_ibs_groups_csv or check the git checkout."
+        )
+    shutil.copy2(IBS_GROUPS_CSV_REPO, IBS_GROUPS_CSV_VOL)
+    return IBS_GROUPS_CSV_VOL
+
+
 def _has_kvasir() -> bool:
     return KVASIR_ROOT.is_dir() and _count_images(KVASIR_ROOT) > 1000
 
 
-def _has_ibs() -> bool:
+def _has_ibs_patient() -> bool:
     return IBS_ROOT.is_dir() and _count_images(IBS_ROOT) > 1000
+
+
+def _has_ibs_preprocessed() -> bool:
+    return IBS_PREPROCESSED_ROOT.is_dir() and _count_images(IBS_PREPROCESSED_ROOT) > 1000
 
 
 def _count_images(root: Path) -> int:

@@ -5,7 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from modal_runner.config import DATA_ROOT, IBS_ROOT, KVASIR_ROOT
+from modal_runner.config import (
+    DATA_ROOT,
+    IBS_GROUPS_CSV_REPO,
+    IBS_GROUPS_CSV_VOL,
+    IBS_ROOT,
+    KVASIR_ROOT,
+)
+from modal_runner.jobs.download import _ensure_groups_csv_on_volume
 from modal_runner.runtime import ensure_layout, run_module
 
 
@@ -35,13 +42,28 @@ def prepare_ibs_folds(
     seed: int = 42,
 ) -> str:
     """
-    Patient-level 5-fold CV for IBS.
+    Patient-level 5-fold CV for IBS (``IBS-patient-dataset``).
 
-    ``groups_csv`` must live on the volume (e.g. /vol/data/ibs_groups.csv).
+    Defaults to the bundled ``ibs_groups.csv`` (copied onto the volume).
     """
     ensure_layout()
     if not IBS_ROOT.exists():
-        raise FileNotFoundError(f"Missing {IBS_ROOT}. Run download-ibs first.")
+        raise FileNotFoundError(
+            f"Missing {IBS_ROOT}. Run download-ibs-patient first "
+            "(franchisn/ibs-dataset → flat IBS/Normal with Proc filenames)."
+        )
+
+    if groups_csv:
+        path = Path(groups_csv)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"groups_csv not found: {path}. Bundled default is "
+                f"{IBS_GROUPS_CSV_REPO} (also /vol/data/ibs_groups.csv)."
+            )
+    else:
+        path = _ensure_groups_csv_on_volume()
+
+    # prepare_ibs_patient_folds expects data_root = class-folder parent
     args = [
         "--data-root",
         str(DATA_ROOT),
@@ -50,17 +72,13 @@ def prepare_ibs_folds(
         str(n_folds),
         "--seed",
         str(seed),
+        "--groups-csv",
+        str(path),
+        "--patient-dataset-root",
+        str(IBS_ROOT),
     ]
-    if groups_csv:
-        path = Path(groups_csv)
-        if not path.exists():
-            raise FileNotFoundError(
-                f"groups_csv not found: {path}. Upload it to the volume first:\n"
-                "  modal volume put xai-enhancer-vol ./ibs_groups.csv /data/ibs_groups.csv"
-            )
-        args.extend(["--groups-csv", str(path)])
     run_module("XAI_Enhancer_module.ibs.download_and_prepare", args)
-    return f"IBS folds under {IBS_ROOT / 'splits'}"
+    return f"IBS folds under {IBS_ROOT / 'splits'} (groups_csv={path})"
 
 
 def smoke_splits(*, dedupe: bool = False) -> str:
@@ -74,5 +92,8 @@ def smoke_splits(*, dedupe: bool = False) -> str:
     ]
     if dedupe:
         args.append("--dedupe")
+    if IBS_GROUPS_CSV_VOL.exists() or IBS_GROUPS_CSV_REPO.exists():
+        csv_path = IBS_GROUPS_CSV_VOL if IBS_GROUPS_CSV_VOL.exists() else IBS_GROUPS_CSV_REPO
+        args.extend(["--groups-csv", str(csv_path)])
     run_module("XAI_Enhancer_module.common.smoke_splits", args)
     return "smoke_splits finished"

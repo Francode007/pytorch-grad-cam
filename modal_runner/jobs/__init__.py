@@ -2,6 +2,7 @@
 
 from modal_runner.jobs.download import (
     download_ibs,
+    download_ibs_patient,
     download_kvasir,
     download_models,
     ingest_ibs_zip,
@@ -22,6 +23,7 @@ from modal_runner.jobs.train import (
 
 __all__ = [
     "download_ibs",
+    "download_ibs_patient",
     "download_kvasir",
     "download_models",
     "ingest_ibs_zip",

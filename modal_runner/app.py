@@ -71,9 +71,27 @@ def download_kvasir(skip_if_present: bool = True, source: str = "kaggle") -> str
     secrets=[kaggle_secret],
     timeout=TIMEOUT_DOWNLOAD_S,
     cpu=4.0,
+    memory=16384,
+)
+def download_ibs_patient(skip_if_present: bool = True, force: bool = False) -> str:
+    """Download franchisn/ibs-dataset → flat IBS-patient-dataset + groups CSV."""
+    from modal_runner.jobs.download import download_ibs_patient as _job
+
+    msg = _job(skip_if_present=skip_if_present, force=force)
+    _commit()
+    return msg
+
+
+@app.function(
+    image=image,
+    volumes=_VOLUMES,
+    secrets=[kaggle_secret],
+    timeout=TIMEOUT_DOWNLOAD_S,
+    cpu=4.0,
     memory=8192,
 )
 def download_ibs(skip_if_present: bool = True, source: str = "kaggle") -> str:
+    """Legacy numeric pre-processed dump (no exam IDs). Prefer download-ibs-patient."""
     from modal_runner.jobs.download import download_ibs as _job
 
     msg = _job(skip_if_present=skip_if_present, source=source)
@@ -89,7 +107,7 @@ def download_ibs(skip_if_present: bool = True, source: str = "kaggle") -> str:
     memory=16384,
 )
 def ingest_ibs_zip(zip_path: str = "") -> str:
-    """Extract IBS from a zip already on the volume (bypass Kaggle)."""
+    """Extract legacy numeric IBS from a zip already on the volume (bypass Kaggle)."""
     from modal_runner.jobs.download import ingest_ibs_zip as _job
 
     msg = _job(zip_path=zip_path or None)
@@ -358,13 +376,22 @@ def _build_parser() -> argparse.ArgumentParser:
     dk.add_argument("--force", action="store_true", help="Re-download even if present")
     dk.add_argument("--source", default="kaggle", choices=("kaggle", "simula", "manual"))
 
-    di = sub.add_parser("download-ibs", help="Download IBS pre-processed dataset from Kaggle")
+    di = sub.add_parser(
+        "download-ibs",
+        help="Legacy: download numeric pre-processed IBS (no exam IDs)",
+    )
     di.add_argument("--force", action="store_true")
     di.add_argument("--source", default="kaggle", choices=("kaggle", "zip", "manual"))
 
+    dip = sub.add_parser(
+        "download-ibs-patient",
+        help="Download franchisn/ibs-dataset → IBS-patient-dataset + ibs_groups.csv",
+    )
+    dip.add_argument("--force", action="store_true", help="Re-download and rebuild")
+
     iiz = sub.add_parser(
         "ingest-ibs-zip",
-        help="Extract IBS from /vol/data/IBS-preprocessed-dataset.zip (bypass Kaggle 403)",
+        help="Extract legacy numeric IBS from volume zip (bypass Kaggle 403)",
     )
     iiz.add_argument(
         "--zip-path",
@@ -376,8 +403,15 @@ def _build_parser() -> argparse.ArgumentParser:
     pk.add_argument("--seed", type=int, default=42)
     pk.add_argument("--no-dedupe", action="store_true")
 
-    pi = sub.add_parser("prepare-ibs-folds", help="Patient-level 5-fold CV (needs groups CSV)")
-    pi.add_argument("--groups-csv", required=True, help="Path on volume, e.g. /vol/data/ibs_groups.csv")
+    pi = sub.add_parser(
+        "prepare-ibs-folds",
+        help="Patient-level 5-fold CV (defaults to bundled ibs_groups.csv)",
+    )
+    pi.add_argument(
+        "--groups-csv",
+        default="",
+        help="Optional override (default: /vol/data/ibs_groups.csv from bundled metadata)",
+    )
     pi.add_argument("--n-folds", type=int, default=5)
     pi.add_argument("--seed", type=int, default=42)
 
@@ -458,6 +492,8 @@ def main(*cli_args: str) -> None:
         print(download_models.remote())
     elif action == "download-kvasir":
         print(download_kvasir.remote(skip_if_present=not args.force, source=args.source))
+    elif action == "download-ibs-patient":
+        print(download_ibs_patient.remote(skip_if_present=not args.force, force=args.force))
     elif action == "download-ibs":
         print(download_ibs.remote(skip_if_present=not args.force, source=args.source))
     elif action == "ingest-ibs-zip":
@@ -467,7 +503,9 @@ def main(*cli_args: str) -> None:
     elif action == "prepare-ibs-folds":
         print(
             prepare_ibs_folds.remote(
-                groups_csv=args.groups_csv, n_folds=args.n_folds, seed=args.seed,
+                groups_csv=args.groups_csv or None,
+                n_folds=args.n_folds,
+                seed=args.seed,
             )
         )
     elif action == "smoke-splits":

@@ -42,15 +42,21 @@ def _print_csv(path: Path) -> None:
             print("  ".join(str(r.get(c, "")).ljust(widths[c]) for c in cols))
 
 
-def _ibs_filename_audit(ibs_root: Path) -> None:
-    print("===== IBS filename samples (Kaggle pre-processed) =====")
-    diag = diagnose_ibs_grouping(ibs_root, n_samples=8)
+def _ibs_filename_audit(ibs_root: Path, groups_csv: Path | None = None) -> None:
+    print("===== IBS filename / group audit =====")
+    group_map = None
+    if groups_csv and groups_csv.exists():
+        from XAI_Enhancer_module.common.splits import load_group_map
+
+        group_map = load_group_map(groups_csv)
+        print(f"groups_csv: {groups_csv} ({len(group_map)} keys)")
+    diag = diagnose_ibs_grouping(ibs_root, n_samples=8, group_map=group_map)
     print(f"n_images={diag['n_images']} resolved={diag['n_resolved']} "
           f"unresolved={diag['n_unresolved']} exif_present={diag['exif_present']}")
     for s in diag["samples"]:
         p = ibs_root / s
         try:
-            gid = extract_group_id(p, ibs_root)
+            gid = extract_group_id(p, ibs_root, group_map=group_map)
             print(f"  {s}  ->  group={gid}")
         except GroupIdError as e:
             print(f"  {s}  ->  UNRESOLVED ({e})")
@@ -58,8 +64,8 @@ def _ibs_filename_audit(ibs_root: Path) -> None:
         print("extract_group_id succeeded on all images.")
     else:
         print(
-            "\nNo recoverable exam/patient id (numeric stems, class folders only, no EXIF). "
-            "Patient-level folds require --groups-csv (R3-1 / D8)."
+            "\nNo recoverable exam/patient id. Use franchisn/ibs-dataset + "
+            "XAI_Enhancer_module/ibs/metadata/ibs_groups.csv (R3-1 / D8)."
         )
 
 
@@ -107,15 +113,21 @@ def _kvasir_summary(kvasir_root: Path, dedupe: bool) -> Path:
 def main() -> int:
     import argparse
     p = argparse.ArgumentParser(description="Phase 1 split smoke test")
-    p.add_argument("--ibs-root", type=str, default="data/IBS-preprocessed-dataset")
+    p.add_argument("--ibs-root", type=str, default="data/IBS-patient-dataset")
     p.add_argument("--kvasir-root", type=str, default="data/kvasir-v2")
+    p.add_argument(
+        "--groups-csv",
+        type=str,
+        default=str(_REPO_ROOT / "XAI_Enhancer_module" / "ibs" / "metadata" / "ibs_groups.csv"),
+    )
     p.add_argument("--dedupe", action="store_true", help="Run pHash near-duplicate pass on Kvasir (slow)")
     p.add_argument("--no-kvasir", action="store_true")
     args = p.parse_args()
 
     ibs_root = Path(args.ibs_root)
+    groups_csv = Path(args.groups_csv) if args.groups_csv else None
     if ibs_root.exists():
-        _ibs_filename_audit(ibs_root)
+        _ibs_filename_audit(ibs_root, groups_csv=groups_csv)
     else:
         print(f"IBS root not found: {ibs_root} (skipping filename audit)")
 

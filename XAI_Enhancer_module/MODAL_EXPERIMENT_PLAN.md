@@ -28,10 +28,11 @@ modal run -m modal_runner.app -- download-models
 # Kvasir (Kaggle) — or skip if already on volume
 modal run -m modal_runner.app -- download-kvasir
 
-# IBS — if Kaggle 403, use the local zip instead:
-# modal volume put xai-enhancer-vol data/IBS-preprocessed-dataset.zip /data/IBS-preprocessed-dataset.zip
-# modal run -m modal_runner.app -- ingest-ibs-zip
-modal run -m modal_runner.app -- download-ibs
+# IBS — patient-aware tree (revision default):
+modal run -m modal_runner.app -- download-ibs-patient
+# Legacy numeric dump only if needed:
+# modal run -m modal_runner.app -- download-ibs
+# or: modal volume put … IBS-preprocessed-dataset.zip && ingest-ibs-zip
 ```
 
 Pull anything back anytime:
@@ -49,7 +50,7 @@ modal volume get xai-enhancer-vol /runs ./modal_artifacts/runs
 
 **Goal (R3-1):** Kvasir train/val/test 70/10/20 + pHash near-dup guard; IBS patient-level folds when IDs exist; split-summary CSVs.
 
-**Status:** 1A ✅ completed · 1B next · 1C optional
+**Status:** 1A ✅ completed · 1B ✅ completed · 1C optional · **Phase 2 next**
 
 ### 1A. Kvasir splits — ✅ completed (2026-09-03)
 
@@ -89,31 +90,47 @@ modal volume get xai-enhancer-vol \
 
 **Acceptance (met):** `train+val+test = 8000`; summary CSV has 8 classes; PROTOCOL records seed=42 and dedupe counts.
 
-### 1B. IBS patient folds
+### 1B. IBS patient folds — ✅ completed (2026-09-03)
 
-Source: private Kaggle [`franchisn/ibs-dataset`](https://www.kaggle.com/datasets/franchisn/ibs-dataset)
-flattened to `/vol/data/IBS-patient-dataset`. Exam map is bundled at
-`XAI_Enhancer_module/ibs/metadata/ibs_groups.csv` (copied to `/vol/data/ibs_groups.csv`).
+Done on Modal volume `xai-enhancer-vol`: private Kaggle [`franchisn/ibs-dataset`](https://www.kaggle.com/datasets/franchisn/ibs-dataset)
+flattened to `/vol/data/IBS-patient-dataset`; exam map from bundled
+`XAI_Enhancer_module/ibs/metadata/ibs_groups.csv` → `/vol/data/ibs_groups.csv`.
+
+| | Count |
+|--|------:|
+| Images | 5547 (711 IBS + 4836 Normal) |
+| Exam groups | **126** (16 IBS + 110 Normal) |
+| Folds | 5 (`StratifiedGroupKFold`, seed=42, inner val 15%) |
+| Unresolved IDs | **0** |
+
+Re-run only if you intentionally want to regenerate folds:
 
 ```bash
 modal run -m modal_runner.app -- download-ibs-patient
 modal run -m modal_runner.app -- prepare-ibs-folds --n-folds 5 --seed 42
+```
 
+Fetch the summary locally (if not already under `modal_artifacts/`):
+
+```bash
 modal volume get xai-enhancer-vol \
   /data/IBS-patient-dataset/splits/split_summary_ibs.csv \
   ./modal_artifacts/split_summary_ibs.csv
 ```
 
-**Acceptance:** 126 exam groups; no `group_id` in two splits of the same fold;
-summary has `n_patients_*` columns.
+**Acceptance (met):** 126 exam groups; fold prep asserts no group leakage across train/val/test;
+summary has `n_patients_*` columns (see D-M4).
 
 > Do **not** use the numeric `pre-processed-ibs` dump for R3-1 — it has no
 > recoverable patient/exam IDs (D-M4).
+
 ### 1C. Optional smoke train (sanity check GPU path)
 
 ```bash
 # 2 epochs on A100 — verifies data loaders + volume writes
 modal run -m modal_runner.app -- train-kvasir --arch resnet18 --smoke
+# IBS smoke still uses deprecated image-level split until Phase 2 --fold lands:
+# modal run -m modal_runner.app -- train-ibs --arch resnet18 --smoke
 ```
 
 ---
@@ -256,8 +273,8 @@ Until those actions exist, run modules inside a one-off Modal function or extend
 
 | Tier (`experiment-plan.md`) | Phase | Modal actions available today |
 |-----------------------------|-------|-------------------------------|
-| 0.4 Kvasir near-dup | 1 | `prepare-kvasir-splits` |
-| 0.1–0.2 IBS IDs / counts | 1 | `download-ibs-patient`, `prepare-ibs-folds`, `smoke-splits` |
+| 0.4 Kvasir near-dup | 1A ✅ | `prepare-kvasir-splits` (done on volume) |
+| 0.1–0.2 IBS IDs / counts | 1B ✅ | `download-ibs-patient`, `prepare-ibs-folds` (done on volume) |
 | 1.1–1.3 Train + classifier table | 2 | `train-kvasir`, `train-kvasir-matrix`, `train-ibs`, `eval-*-cls` (matrix/seeds/F1 pending) |
 | 1.4 + 2.1 Table 1 / CAM | 3 | `eval-*-cams` (per-image log / uniform / layer-set pending) |
 | 2.2 Stats / win-tie-loss | 4 | pull + `analysis/stats.py` (to build) |
