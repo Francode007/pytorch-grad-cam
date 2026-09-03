@@ -150,7 +150,7 @@ modal run -m modal_runner.app -- train-kvasir --arch resnet18 --smoke
 | Seed/fold-aware train | `kvasir/train.py`, `ibs/train.py` | Kvasir `--seed`; IBS `--fold`; val **macro-F1** ckpt; `args.json` |
 | Classifier metrics | `kvasir/eval_classification.py`, `ibs/eval_classification.py` | AUROC, F1, ECE, per-class; default `--split test` |
 | Matrix orchestrator | `common/train_matrix.py` | local 5×3 / 5×5 loops |
-| Modal wiring | `modal_runner/jobs/train.py`, `app.py` | `train-*-matrix`, `--fold` / `--seeds` |
+| Modal wiring | `modal_runner/jobs/train.py`, `app.py` | `train-kvasir-seed` (5× A100 / seed), `train-*-matrix`, `--fold` / `--seed` |
 
 ### Modal commands
 
@@ -159,12 +159,20 @@ modal run -m modal_runner.app -- train-kvasir --arch resnet18 --smoke
 modal run -m modal_runner.app -- train-kvasir --arch resnet18 --seed 42 --smoke
 modal run -m modal_runner.app -- train-ibs --arch resnet18 --fold 0 --smoke
 
-# Single full run
-modal run -m modal_runner.app -- train-kvasir --arch resnet50 --seed 42 --epochs 50
+# Single full run (detach survives Mac logout)
+modal run --detach -m modal_runner.app -- train-kvasir --arch resnet50 --seed 42 --epochs 50
 modal run -m modal_runner.app -- train-ibs --arch resnet50 --fold 0 --epochs 50
 
-# Full matrices (long)
-modal run -m modal_runner.app -- train-kvasir-matrix --epochs 50
+# Kvasir: 5 parallel A100s per seed (run 42 first to estimate cost, then 43 / 44)
+modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 42
+modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 43
+modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 44
+
+# Resume one failed arch from mid/latest checkpoint
+modal run --detach -m modal_runner.app -- \
+  train-kvasir --arch vgg16 --seed 42 --resume auto
+
+# IBS matrix still sequential for now
 modal run -m modal_runner.app -- train-ibs-matrix --epochs 50
 
 # Classifier eval on held-out test

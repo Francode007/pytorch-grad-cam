@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from typing import List, Optional, Sequence
 
-from modal_runner.config import IBS_ARCHS, IBS_ROOT, IBS_RUNS, KVASIR_ARCHS, KVASIR_ROOT, KVASIR_RUNS
+from modal_runner.config import (
+    IBS_ARCHS,
+    IBS_ROOT,
+    IBS_RUNS,
+    KVASIR_ARCHS,
+    KVASIR_BATCH_SIZE_DEFAULT,
+    KVASIR_ROOT,
+    KVASIR_RUNS,
+)
 from modal_runner.runtime import configure_torch_home, ensure_layout, run_module
 
 
@@ -20,6 +28,9 @@ def _gpu_train_args(
     amp_dtype: str,
     compile_model: bool,
     fold: Optional[int] = None,
+    resume: str = "",
+    auto_batch: bool = False,
+    a100: bool = True,
 ) -> List[str]:
     args: List[str] = [
         "--data-root", data_root,
@@ -37,6 +48,12 @@ def _gpu_train_args(
         args.extend(["--amp", "--amp-dtype", amp_dtype])
     if compile_model:
         args.append("--compile")
+    if a100:
+        args.append("--a100")
+    if auto_batch or batch_size <= 0:
+        args.append("--auto-batch-size")
+    if resume:
+        args.extend(["--resume", resume])
     return args
 
 
@@ -45,11 +62,13 @@ def train_kvasir(
     arch: str = "resnet50",
     seed: int = 42,
     epochs: int = 50,
-    batch_size: int = 128,
+    batch_size: int = KVASIR_BATCH_SIZE_DEFAULT,
     amp: bool = True,
     amp_dtype: str = "bfloat16",
     compile_model: bool = True,
     output_dir: Optional[str] = None,
+    resume: str = "",
+    auto_batch: bool = True,
     extra_args: Optional[Sequence[str]] = None,
 ) -> str:
     """Train one Kvasir classifier → /vol/runs/kvasir/{arch}/seed{seed}/."""
@@ -69,6 +88,9 @@ def train_kvasir(
         amp=amp,
         amp_dtype=amp_dtype,
         compile_model=compile_model,
+        resume=resume,
+        auto_batch=auto_batch,
+        a100=True,
     )
     if extra_args:
         args.extend(extra_args)
@@ -81,9 +103,9 @@ def train_kvasir_matrix(
     archs: Optional[Sequence[str]] = None,
     seeds: Optional[Sequence[int]] = None,
     epochs: int = 50,
-    batch_size: int = 128,
+    batch_size: int = KVASIR_BATCH_SIZE_DEFAULT,
 ) -> str:
-    """Train Kvasir arches × seeds sequentially."""
+    """Train Kvasir arches × seeds sequentially (legacy; prefer parallel seed fan-out)."""
     chosen = list(archs) if archs else list(KVASIR_ARCHS)
     seed_list = list(seeds) if seeds else [42, 43, 44]
     lines = []
@@ -126,6 +148,8 @@ def train_ibs(
         amp_dtype=amp_dtype,
         compile_model=compile_model,
         fold=fold,
+        auto_batch=False,
+        a100=False,
     )
     if extra_args:
         args.extend(extra_args)

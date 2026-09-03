@@ -13,59 +13,94 @@ Use this alongside:
 
 ## 1. What the matrix commands are
 
-The matrix commands are **nested loops** that call the single-run trainers
-sequentially (one A100 job at a time inside one Modal function). They do **not**
-fan out to parallel GPUs.
+### Kvasir (recommended): parallel per seed
+
+`train-kvasir-seed` fans out **one A100 per architecture** for a **single**
+`--seed` (5 GPUs in parallel). Run seed 42 first, estimate cost, then 43 / 44.
+
+```bash
+# Survives Mac sleep / logout / closed terminal
+modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 42
+
+# Later:
+modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 43
+modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 44
+```
+
+| Modal CLI | Behaviour | Count per invocation |
+|-----------|-----------|---------------------:|
+| `train-kvasir-seed --seed S` | **5 A100s in parallel** (all arches, one seed) | **5** |
+| `train-kvasir` | Single arch × seed (resume / debug) | **1** |
+| `train-kvasir-matrix` | Legacy **sequential** arches×seeds on one GPU | up to **15** |
+
+### IBS (unchanged for now)
 
 | Modal CLI | Local equivalent | Cartesian product (defaults) | Count |
 |-----------|------------------|------------------------------|------:|
-| `train-kvasir-matrix` | `python -m XAI_Enhancer_module.common.train_matrix --dataset kvasir` | **5 arches × 3 seeds** | **15** |
-| `train-ibs-matrix` | `python -m XAI_Enhancer_module.common.train_matrix --dataset ibs` | **5 arches × 5 folds** | **25** |
-| (both) | `--dataset both` | 15 + 25 | **40** |
+| `train-ibs-matrix` | `python -m XAI_Enhancer_module.common.train_matrix --dataset ibs` | **5 arches × 5 folds** sequential | **25** |
 
 ### Default axes
 
 | Axis | Values | Defined in |
 |------|--------|------------|
-| Architectures | `resnet18`, `resnet34`, `resnet50`, `densenet121`, `vgg16` | `modal_runner/config.py` → `KVASIR_ARCHS` / `IBS_ARCHS`; mirrored in `common/train_matrix.py` → `ARCHS` |
-| Kvasir seeds | `42`, `43`, `44` | `train_matrix.KVASIR_SEEDS` / Modal `train_kvasir_matrix` default |
-| IBS folds | `0`, `1`, `2`, `3`, `4` | Patient CV from Phase 1B (`splits/fold{k}/`); `train_matrix.IBS_FOLDS` |
-| IBS RNG seed | `42` (fixed; fold identity comes from `--fold`, not the seed) | `ibs/train.py --seed` |
+| Architectures | `resnet18`, `resnet34`, `resnet50`, `densenet121`, `vgg16` | `modal_runner/config.py` → `KVASIR_ARCHS` / `IBS_ARCHS` |
+| Kvasir seeds | `42`, `43`, `44` | `config.KVASIR_SEEDS`; pass one at a time via `--seed` |
+| IBS folds | `0`, `1`, `2`, `3`, `4` | Patient CV from Phase 1B |
+| IBS RNG seed | `42` (fixed; fold identity comes from `--fold`) | `ibs/train.py --seed` |
 
 ### Shared train hyperparameters (each cell)
 
 Unless overridden on the CLI:
 
-| Flag | Default (Modal full run) | Smoke (`--smoke` on single train only) |
-|------|--------------------------|----------------------------------------|
+| Flag | Default (Modal Kvasir seed run) | Smoke (`--smoke`) |
+|------|--------------------------------|-------------------|
 | `--epochs` | `50` | `2` |
-| `--batch-size` | `128` | `32` |
+| `--batch-size` | `0` + **`--auto-batch-size`** (target ~82% VRAM) | `32` |
 | `--device` | `cuda` | `cuda` |
-| `--num-workers` | `8` | `8` |
+| `--num-workers` / prefetch | `8` / `4` | same |
 | `--amp` / `--amp-dtype` | on / `bfloat16` | on / `bfloat16` |
 | `--compile` | on | on |
-| Optimizer / LR (trainer defaults) | AdamW, `1e-4`, wd `1e-4`, cosine | same |
+| Optimizer / LR | AdamW, `1e-4`, wd `1e-4`, cosine | same |
 
 Checkpoint rule (D-M5): **best `val_f1_macro`** → `best.pth` (not accuracy).
 
----
+Also written every run:
 
-## 2. Full expansion — Kvasir matrix (15 runs)
+| File | Purpose |
+|------|---------|
+| `train.log` | Tee of stdout/stderr (always on volume) |
+| `checkpoint_latest.pth` | Full trainer state each epoch (resume) |
+| `checkpoint_mid.pth` | Full state at `epochs // 2` |
+| `metrics.json` | Per-epoch metrics + optional `gpu_used_frac` |
+| `best.pth` / `last.pth` | Best val F1 / final weights |
 
-Command:
+Resume one failed arch:
 
 ```bash
-modal run -m modal_runner.app -- train-kvasir-matrix --epochs 50
+modal run --detach -m modal_runner.app -- \
+  train-kvasir --arch vgg16 --seed 42 --resume auto
 ```
 
-Each cell invokes:
+---
+
+## 2. Full expansion — Kvasir matrix (15 runs = 3 waves × 5 GPUs)
+
+Preferred commands (one seed wave at a time):
+
+```bash
+modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 42
+modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 43
+modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 44
+```
+
+Each cell invokes (batch size resolved by auto-probe unless overridden):
 
 ```text
 python -m XAI_Enhancer_module.kvasir.train \
   --data-root /vol/data/kvasir-v2 \
-  --arch <ARCH> --seed <SEED> --epochs 50 --batch-size 128 \
+  --arch <ARCH> --seed <SEED> --epochs 50 --batch-size 0 \
   --output-dir /vol/runs/kvasir --device cuda --num-workers 8 \
-  --amp --amp-dtype bfloat16 --compile
+  --amp --amp-dtype bfloat16 --compile --a100 --auto-batch-size
 ```
 
 | # | arch | seed | Output directory |
@@ -260,14 +295,17 @@ Per-cell GPU-hours for a **50-epoch** run (point estimate; low–high in parenth
 
 Extra overhead: each cell is a fresh `python -m …` process, so **compile warm-up is paid per cell** (~2–5 min) → roughly **+1–3 GPU-hr** across a full matrix.
 
-### Kvasir matrix — 15 runs (`train-kvasir-matrix`)
+### Kvasir matrix — 15 runs (`train-kvasir-seed` × 3)
 
 | | Low | Mid (point) | High |
 |--|----:|------------:|-----:|
 | GPU-hours (5 arches × 3 seeds) | ~25 | **~32** | ~42 |
 | GPU $ @ $2.10/hr | ~$52 | **~$66** | ~$88 |
 | + ~15% CPU/RAM | ~$60 | **~$76** | ~$101 |
-| Wall-clock if **sequential** (one container) | ~1.0 day | **~1.3 days** | ~1.8 days |
+| Wall-clock **per seed** (5 A100s parallel) | ~3–4 h | **~4–5 h** | ~6–8 h |
+| Wall-clock **all 3 seeds** (sequential waves) | ~9–12 h | **~12–15 h** | ~18–24 h |
+
+**Recommended cost probe:** run `--seed 42` only first (~1/3 of Kvasir GPU-$ ≈ **$20–$35**), read Modal usage, then launch 43 / 44.
 
 ### IBS matrix — 25 runs (`train-ibs-matrix`)
 
@@ -291,11 +329,12 @@ Extra overhead: each cell is a fresh `python -m …` process, so **compile warm-
 
 ### Ways to cut cost / wall-clock
 
-1. **Split the matrix** across concurrent Modal apps (`--archs resnet18` in one, `resnet50` in another) — same GPU-$ if sequential GPU-hours are unchanged, but wall-clock drops with concurrency (subject to plan GPU limits).
+1. **Kvasir parallel seed waves** (`train-kvasir-seed`) — same GPU-$ as sequential, ~3× less wall-clock per seed; Starter plans typically allow ≥10 concurrent GPUs.
 2. **Smoke / short epochs first** (`--smoke` or `--epochs 5`) to validate paths before paying for 50 epochs.
-3. **Narrow arches** for a pilot (e.g. only `resnet18` + `resnet50`) then expand.
+3. **Narrow arches** for a pilot (e.g. `--archs resnet18 resnet50`) then expand.
 4. Watch for **region multipliers** in the Modal dashboard if you pin regions.
 5. Academic / startup credit grants on Modal can offset a large fraction of this budget.
+6. **Resume** failed cells with `--resume auto` instead of restarting from epoch 1.
 
 Classifier eval (`eval-*-cls`) after training is cheap (minutes per checkpoint) — typically **&lt; $5** for all 40 evals.
 
@@ -303,11 +342,12 @@ Classifier eval (`eval-*-cls`) after training is cheap (minutes per checkpoint) 
 
 ## 9. Design notes
 
-1. **Sequential, not parallel** — one Modal container runs the whole matrix; expect long wall-clock for 15 / 25 full 50-epoch jobs. Split with `--archs` / `--seeds` / `--folds` if you want several Modal apps in parallel.
+1. **Kvasir: parallel per seed** — `train-kvasir-seed` maps five `train_kvasir` A100 containers. Use `modal run --detach` so logout does not kill the wave. IBS matrix remains sequential for now.
 2. **Kvasir seed ≠ new split** — Phase 1A splits are fixed on disk; seeds diversify training stochasticity for mean±SD tables.
 3. **IBS fold = new patient partition** — each fold has a disjoint test exam set; report mean±SD over folds.
 4. **Legacy paths** — eval still falls back to `/vol/runs/{ds}/{arch}/best.pth` if an old flat layout exists.
 5. **Do not use** the numeric `IBS-preprocessed-dataset` for these matrices; trainers default to `IBS-patient-dataset` (D-M4).
+6. **GPU packing** — `--auto-batch-size` targets ~82% VRAM; check `train.log` lines `[gpu …]` / `gpu_used_frac` in `metrics.json`. SM util can still be low if the dataloader is the bottleneck (`num_workers` / `prefetch_factor` already raised for A100).
 
 ---
 

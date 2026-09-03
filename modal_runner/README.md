@@ -177,14 +177,29 @@ modal run -m modal_runner.app -- train-kvasir --arch resnet18 --smoke
 ### Full single-arch train
 
 ```bash
-modal run -m modal_runner.app -- train-kvasir --arch resnet50 --epochs 50
+modal run --detach -m modal_runner.app -- train-kvasir --arch resnet50 --seed 42 --epochs 50
 ```
 
-### Revision matrix (5 arches, sequential)
+### Kvasir revision matrix (5 A100s × one seed; repeat for 43, 44)
 
 ```bash
-modal run -m modal_runner.app -- train-kvasir-matrix --epochs 50
+# Logout-safe: continues after Mac sleep / closed terminal
+modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 42
+
+# After seed 42 finishes (check Modal dashboard / volume metrics):
+modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 43
+modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 44
 ```
+
+Resume one arch if a container dies:
+
+```bash
+modal run --detach -m modal_runner.app -- \
+  train-kvasir --arch vgg16 --seed 42 --resume auto
+```
+
+Logs + checkpoints live on the volume under `/vol/runs/kvasir/{arch}/seed{seed}/`
+(`train.log`, `checkpoint_latest.pth`, `checkpoint_mid.pth`, `best.pth`).
 
 ### Classification metrics (test split)
 

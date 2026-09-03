@@ -61,6 +61,12 @@ TIMEOUT_EVAL_S = 12 * 60 * 60
 KVASIR_ARCHS = ("resnet18", "resnet34", "resnet50", "densenet121", "vgg16")
 IBS_ARCHS = KVASIR_ARCHS
 
+# Seeds for the full Kvasir matrix (run one seed at a time via train-kvasir-seed)
+KVASIR_SEEDS = (42, 43, 44)
+
+# batch_size=0 in jobs → train.py auto-batch (target ~82% VRAM) or A100 defaults
+KVASIR_BATCH_SIZE_DEFAULT = 0
+
 # Local files / dirs that must not be uploaded into the Modal image mount
 LOCAL_IGNORE = [
     ".git",

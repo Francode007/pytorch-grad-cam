@@ -18,6 +18,7 @@ import modal
 from modal_runner.config import (
     APP_NAME,
     GPU_TRAIN,
+    KVASIR_ARCHS,
     SECRET_KAGGLE,
     TIMEOUT_DOWNLOAD_S,
     TIMEOUT_EVAL_S,
@@ -201,15 +202,26 @@ def train_kvasir(
     arch: str = "resnet50",
     seed: int = 42,
     epochs: int = 50,
-    batch_size: int = 128,
+    batch_size: int = 0,
     smoke: bool = False,
+    resume: str = "",
+    auto_batch: bool = True,
 ) -> str:
+    """One A100: train a single Kvasir (arch, seed). Logs/ckpts on the volume."""
     from modal_runner.jobs.train import train_kvasir as _job
 
     if smoke:
         epochs = min(epochs, 2)
-        batch_size = min(batch_size, 32)
-    msg = _job(arch=arch, seed=seed, epochs=epochs, batch_size=batch_size)
+        batch_size = 32 if batch_size <= 0 else min(batch_size, 32)
+        auto_batch = False
+    msg = _job(
+        arch=arch,
+        seed=seed,
+        epochs=epochs,
+        batch_size=batch_size,
+        resume=resume,
+        auto_batch=auto_batch and not smoke,
+    )
     _commit()
     return msg
 
@@ -225,8 +237,9 @@ def train_kvasir_matrix(
     archs: Optional[List[str]] = None,
     seeds: Optional[List[int]] = None,
     epochs: int = 50,
-    batch_size: int = 128,
+    batch_size: int = 0,
 ) -> str:
+    """Legacy sequential arches×seeds on one GPU. Prefer train-kvasir-seed."""
     from modal_runner.jobs.train import train_kvasir_matrix as _job
 
     msg = _job(archs=archs, seeds=seeds, epochs=epochs, batch_size=batch_size)
@@ -446,12 +459,42 @@ def _build_parser() -> argparse.ArgumentParser:
     tk.add_argument("--arch", default="resnet50")
     tk.add_argument("--seed", type=int, default=42)
     tk.add_argument("--epochs", type=int, default=50)
-    tk.add_argument("--batch-size", type=int, default=128)
+    tk.add_argument(
+        "--batch-size",
+        type=int,
+        default=0,
+        help="0 + auto-batch (default): probe ~82%% VRAM; or set explicitly",
+    )
+    tk.add_argument("--no-auto-batch", action="store_true", help="Disable VRAM batch probe")
+    tk.add_argument(
+        "--resume",
+        default="",
+        help="Checkpoint path, or auto|latest|mid under the run dir",
+    )
     tk.add_argument("--smoke", action="store_true", help="2 epochs, small batch")
 
-    tkm = sub.add_parser("train-kvasir-matrix", help="Train arches × seeds (42/43/44)")
+    tks = sub.add_parser(
+        "train-kvasir-seed",
+        help="Parallel: 5 A100s (one per arch) for a single --seed (logout-safe with --detach)",
+    )
+    tks.add_argument("--seed", type=int, required=True, help="Run this seed only (42, then 43, then 44)")
+    tks.add_argument("--epochs", type=int, default=50)
+    tks.add_argument("--batch-size", type=int, default=0, help="0 = auto-batch per arch")
+    tks.add_argument("--no-auto-batch", action="store_true")
+    tks.add_argument("--archs", nargs="+", default=None, help="Default: all 5 matrix arches")
+    tks.add_argument(
+        "--resume",
+        default="",
+        help="Pass to every arch (e.g. auto to continue from checkpoint_latest)",
+    )
+    tks.add_argument("--smoke", action="store_true")
+
+    tkm = sub.add_parser(
+        "train-kvasir-matrix",
+        help="Legacy sequential arches×seeds on ONE GPU (prefer train-kvasir-seed)",
+    )
     tkm.add_argument("--epochs", type=int, default=50)
-    tkm.add_argument("--batch-size", type=int, default=128)
+    tkm.add_argument("--batch-size", type=int, default=0)
     tkm.add_argument("--archs", nargs="+", default=None)
     tkm.add_argument("--seeds", nargs="+", type=int, default=None)
 
@@ -510,7 +553,7 @@ def main(*cli_args: str) -> None:
     --------
     modal run -m modal_runner.app -- download-models
     modal run -m modal_runner.app -- download-kvasir
-    modal run -m modal_runner.app -- train-kvasir --arch resnet18 --smoke
+    modal run --detach -m modal_runner.app -- train-kvasir-seed --seed 42
     """
     parser = _build_parser()
     if not cli_args or cli_args[0] in ("-h", "--help", "help"):
@@ -552,8 +595,47 @@ def main(*cli_args: str) -> None:
                 epochs=args.epochs,
                 batch_size=args.batch_size,
                 smoke=args.smoke,
+                resume=args.resume,
+                auto_batch=not args.no_auto_batch,
             )
         )
+    elif action == "train-kvasir-seed":
+        # Fan out: one A100 container per architecture for this seed only.
+        # Use `modal run --detach ...` so the job survives laptop sleep/logout.
+        archs = list(args.archs) if args.archs else list(KVASIR_ARCHS)
+        auto_batch = not args.no_auto_batch
+        print(
+            f"Spawning {len(archs)} A100 jobs for Kvasir seed={args.seed}: {archs}",
+            flush=True,
+        )
+        results = list(
+            train_kvasir.map(
+                archs,
+                kwargs={
+                    "seed": args.seed,
+                    "epochs": args.epochs,
+                    "batch_size": args.batch_size,
+                    "smoke": args.smoke,
+                    "resume": args.resume,
+                    "auto_batch": auto_batch,
+                },
+                order_outputs=True,
+                return_exceptions=True,
+            )
+        )
+        for arch, res in zip(archs, results):
+            if isinstance(res, Exception):
+                print(f"FAIL  arch={arch} seed={args.seed}: {res}", flush=True)
+            else:
+                print(f"OK    {res}", flush=True)
+        n_fail = sum(1 for r in results if isinstance(r, Exception))
+        if n_fail:
+            raise SystemExit(
+                f"{n_fail}/{len(archs)} arch(s) failed for seed={args.seed}. "
+                f"Resume with: modal run --detach -m modal_runner.app -- "
+                f"train-kvasir --arch <arch> --seed {args.seed} --resume auto"
+            )
+        print(f"All {len(archs)} arches finished for seed={args.seed}.", flush=True)
     elif action == "train-kvasir-matrix":
         print(
             train_kvasir_matrix.remote(
