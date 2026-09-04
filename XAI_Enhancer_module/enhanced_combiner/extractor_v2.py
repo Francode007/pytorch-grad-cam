@@ -25,7 +25,9 @@ class EnhancedExtractorV2(OptimizedCamExtractor):
         """
         super().__init__(model, model_name, conv_layers, cam_method, device_preference, layer_batch_size)
         self.aggregation_config = aggregation_config or {"type": "standard"}
-        
+        # Last extraction's per-layer similarity scores [B, L] (for per-image logs / Fig. 3)
+        self.last_layer_scores: Optional[np.ndarray] = None
+
     def extract_saliency_map(self, 
                            input_data: Union[str, torch.Tensor],
                            predicted_label: Union[int, List[int]],
@@ -114,7 +116,9 @@ class EnhancedExtractorV2(OptimizedCamExtractor):
         # Iterate over batch to apply aggregation (safest for complex aggregators like Pyramid)
         # TODO: Fully vectorize Aggregator later.
         scores_t = torch.from_numpy(cosine_similarities).to(self.device) # [Num_Layers, B]
-        
+        # Persist [B, L] for per-image logging (Tier 1.4)
+        self.last_layer_scores = cosine_similarities.T.copy()
+
         for b in range(batch_size):
             # Extract single sample data
             sample_cams = [c[b] for c in cams_tensor_list] # List of [H, W]

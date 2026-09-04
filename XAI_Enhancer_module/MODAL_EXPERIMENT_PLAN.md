@@ -196,16 +196,18 @@ modal run -m modal_runner.app -- summarize-ibs-fold --fold 0
 
 **Goal:** per-image Parquet/CSV; uniform baseline; `--layer-set`; default `--split test`; `--enhanced-method standard`.
 
-### Code still to land
+**Status:** Tier 1.4 harness code landed — smoke after checkpoints exist.
+
+### Code landed
 
 | Piece | Path |
 |-------|------|
 | Per-image logging | `evaluator/imagenet_proper_auc_evaluator.py` |
 | Uniform aggregator | `enhanced_combiner/aggregator.py` (`type: uniform`) |
-| Layer sets + protocol header | `kvasir/eval_cams.py`, `ibs/eval_cams.py` |
-| Modal flags | `modal_runner/jobs/evaluate.py`, `app.py` (`--layer-set`, `--enhanced-method`) |
+| Layer sets + protocol | `common/layer_sets.py`, `common/cam_eval_protocol.py`, `*/eval_cams.py` |
+| Modal flags | `modal_runner/jobs/evaluate.py`, `app.py` (`--layer-set`, IBS `--fold`) |
 
-### Modal commands (after Phase 3 code lands)
+### Modal commands
 
 ```bash
 # Smoke CAM eval (50 images)

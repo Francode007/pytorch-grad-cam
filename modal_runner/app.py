@@ -615,9 +615,12 @@ def eval_kvasir_cams(
     arch: str = "resnet50",
     checkpoint: Optional[str] = None,
     split: str = "test",
+    seed: int = 42,
     enhanced_method: str = "standard",
-    layer_mode: str = "all",
+    layer_set: str = "all",
+    methods: Optional[str] = None,
     max_images: int = -1,
+    output_dir: Optional[str] = None,
 ) -> str:
     from modal_runner.jobs.evaluate import eval_kvasir_cams as _job
 
@@ -625,9 +628,12 @@ def eval_kvasir_cams(
         arch=arch,
         checkpoint=checkpoint,
         split=split,
+        seed=seed,
         enhanced_method=enhanced_method,
-        layer_mode=layer_mode,
+        layer_set=layer_set,
+        methods=methods,
         max_images=max_images,
+        output_dir=output_dir,
     )
     _commit()
     return msg
@@ -644,9 +650,12 @@ def eval_ibs_cams(
     arch: str = "resnet50",
     checkpoint: Optional[str] = None,
     split: str = "test",
+    fold: int = 0,
     enhanced_method: str = "standard",
-    layer_mode: str = "all",
+    layer_set: str = "all",
+    methods: Optional[str] = None,
     max_images: int = -1,
+    output_dir: Optional[str] = None,
 ) -> str:
     from modal_runner.jobs.evaluate import eval_ibs_cams as _job
 
@@ -654,9 +663,12 @@ def eval_ibs_cams(
         arch=arch,
         checkpoint=checkpoint,
         split=split,
+        fold=fold,
         enhanced_method=enhanced_method,
-        layer_mode=layer_mode,
+        layer_set=layer_set,
+        methods=methods,
         max_images=max_images,
+        output_dir=output_dir,
     )
     _commit()
     return msg
@@ -855,18 +867,24 @@ def _build_parser() -> argparse.ArgumentParser:
     ekcam = sub.add_parser("eval-kvasir-cams", help="CAM faithfulness eval (Kvasir)")
     ekcam.add_argument("--arch", default="resnet50")
     ekcam.add_argument("--split", default="test")
+    ekcam.add_argument("--seed", type=int, default=42)
     ekcam.add_argument("--checkpoint", default="")
     ekcam.add_argument("--enhanced-method", default="standard")
-    ekcam.add_argument("--layer-mode", default="all")
+    ekcam.add_argument("--layer-set", "--layer-mode", dest="layer_set", default="all")
+    ekcam.add_argument("--methods", default="", help="Comma-separated methods (default: eval_cams defaults)")
     ekcam.add_argument("--max-images", type=int, default=-1)
+    ekcam.add_argument("--output-dir", default="", help="Override output dir on volume")
 
     eicam = sub.add_parser("eval-ibs-cams", help="CAM faithfulness eval (IBS)")
     eicam.add_argument("--arch", default="resnet50")
+    eicam.add_argument("--fold", type=int, default=0)
     eicam.add_argument("--split", default="test")
     eicam.add_argument("--checkpoint", default="")
     eicam.add_argument("--enhanced-method", default="standard")
-    eicam.add_argument("--layer-mode", default="all")
+    eicam.add_argument("--layer-set", "--layer-mode", dest="layer_set", default="all")
+    eicam.add_argument("--methods", default="", help="Comma-separated methods (default: eval_cams defaults)")
     eicam.add_argument("--max-images", type=int, default=-1)
+    eicam.add_argument("--output-dir", default="", help="Override output dir on volume")
 
     return p
 
@@ -1082,26 +1100,56 @@ def main(*cli_args: str) -> None:
             )
         )
     elif action == "eval-kvasir-cams":
+        import sys
+
+        detached = ("--detach" in sys.argv) or ("-d" in sys.argv)
         print(
-            eval_kvasir_cams.remote(
-                arch=args.arch,
-                checkpoint=args.checkpoint or None,
-                split=args.split,
-                enhanced_method=args.enhanced_method,
-                layer_mode=args.layer_mode,
-                max_images=args.max_images,
-            )
+            f"Spawning eval_kvasir_cams arch={args.arch} seed={args.seed} "
+            f"split={args.split} max_images={args.max_images} detached={detached}",
+            flush=True,
         )
+        call = eval_kvasir_cams.spawn(
+            arch=args.arch,
+            checkpoint=args.checkpoint or None,
+            split=args.split,
+            seed=args.seed,
+            enhanced_method=args.enhanced_method,
+            layer_set=args.layer_set,
+            methods=args.methods or None,
+            max_images=args.max_images,
+            output_dir=args.output_dir or None,
+        )
+        print(f"FunctionCall id: {call.object_id}", flush=True)
+        print("Monitor: https://modal.com/apps", flush=True)
+        if detached:
+            print("Detached spawn submitted — safe to close the laptop.", flush=True)
+            return
+        print(call.get())
     elif action == "eval-ibs-cams":
+        import sys
+
+        detached = ("--detach" in sys.argv) or ("-d" in sys.argv)
         print(
-            eval_ibs_cams.remote(
-                arch=args.arch,
-                checkpoint=args.checkpoint or None,
-                split=args.split,
-                enhanced_method=args.enhanced_method,
-                layer_mode=args.layer_mode,
-                max_images=args.max_images,
-            )
+            f"Spawning eval_ibs_cams arch={args.arch} fold={args.fold} "
+            f"split={args.split} max_images={args.max_images} detached={detached}",
+            flush=True,
         )
+        call = eval_ibs_cams.spawn(
+            arch=args.arch,
+            checkpoint=args.checkpoint or None,
+            split=args.split,
+            fold=args.fold,
+            enhanced_method=args.enhanced_method,
+            layer_set=args.layer_set,
+            methods=args.methods or None,
+            max_images=args.max_images,
+            output_dir=args.output_dir or None,
+        )
+        print(f"FunctionCall id: {call.object_id}", flush=True)
+        print("Monitor: https://modal.com/apps", flush=True)
+        if detached:
+            print("Detached spawn submitted — safe to close the laptop.", flush=True)
+            return
+        print(call.get())
     else:
         parser.print_help()

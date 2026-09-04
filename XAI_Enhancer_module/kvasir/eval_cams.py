@@ -38,6 +38,12 @@ from XAI_Enhancer_module.utils.hrcam_utils import (
     load_hrcam_head,
     extract_hrcam,
 )
+from XAI_Enhancer_module.common.layer_sets import LAYER_SET_CHOICES
+from XAI_Enhancer_module.common.cam_eval_protocol import (
+    enforce_eval_split,
+    write_protocol_header,
+    per_image_stem,
+)
 
 
 class KvasirProperAUCEvaluator(ImageNetProperAUCEvaluator):
@@ -124,9 +130,14 @@ class KvasirProperAUCEvaluator(ImageNetProperAUCEvaluator):
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Evaluate Standard vs Enhanced CAM on Kvasir-v2 val set")
+    p = argparse.ArgumentParser(description="Evaluate Standard vs Enhanced CAM on Kvasir-v2 (test by default)")
     p.add_argument("--data-root", type=str, default="data/kvasir-v2")
-    p.add_argument("--split", type=str, default="val")
+    p.add_argument("--split", type=str, default="test", choices=["train", "val", "test"])
+    p.add_argument(
+        "--allow-val",
+        action="store_true",
+        help="Permit --split val (forbidden by default; D-M6).",
+    )
     p.add_argument("--arch", type=str, default="resnet50", choices=["resnet50", "resnet18", "resnet34", "densenet121", "vgg16", "vgg19"])
     p.add_argument("--checkpoint", type=str, required=True, help="Path to Kvasir-trained checkpoint")
     p.add_argument(
@@ -134,7 +145,7 @@ def parse_args():
         type=str,
         default="gradcam,gradcampp,enhancedcam",
         help="Comma-separated: gradcam, gradcampp, hirescam, scorecam, ablationcam, "
-             "enhancedcam, layercam, layercam_fused, hrcam",
+             "enhancedcam, uniform, layercam, layercam_fused, hrcam",
     )
     p.add_argument(
         "--base-cam",
@@ -158,15 +169,30 @@ def parse_args():
     p.add_argument(
         "--enhanced-method",
         type=str,
-        default="stagewise",
-        choices=["standard", "stagewise", "topk", "temp", "pyramid"],
-        help="Aggregation for Enhanced CAM",
+        default="standard",
+        choices=["standard", "uniform", "stagewise", "topk", "temp", "pyramid"],
+        help="Aggregation for Enhanced CAM (default: standard / flat softmax, D-M2)",
     )
-    p.add_argument("--layer-mode", type=str, default="last", choices=["last", "last_5", "all"])
+    p.add_argument(
+        "--layer-set",
+        "--layer-mode",
+        dest="layer_set",
+        type=str,
+        default="all",
+        choices=list(LAYER_SET_CHOICES),
+        help="Target layer set for Enhanced/Uniform CAM (default: all)",
+    )
     p.add_argument("--layer-batch-size", type=int, default=32, help="Layers processed in parallel (lower=less VRAM with layer-mode all)")
     p.add_argument("--batch-size", type=int, default=32, help="Batch size for CAM eval (lower=less RAM/VRAM)")
-    p.add_argument("--step-size", type=int, default=224, help="Pixels per step in insertion/deletion (larger=less memory)")
-    p.add_argument("--max-images", type=int, default=-1, help="Cap number of val images (-1 = all)")
+    p.add_argument(
+        "--step-size",
+        type=int,
+        default=224,
+        help="Pixels per Insertion/Deletion step (224 → one row of a 224² image per step)",
+    )
+    p.add_argument("--road-seed", type=int, default=0, help="Seed recorded / applied before ROAD imputation")
+    p.add_argument("--road-imputation", type=str, default="blur", choices=["blur", "black"])
+    p.add_argument("--max-images", type=int, default=-1, help="Cap number of images (-1 = all)")
     p.add_argument("--device", type=str, default="auto")
     p.add_argument("--output-dir", type=str, default="runs/kvasir/cam_eval")
     p.add_argument("--num-workers", type=int, default=4)
@@ -180,7 +206,31 @@ def parse_args():
 
 def main():
     args = parse_args()
+    args.split = enforce_eval_split(args.split, allow_val=args.allow_val)
     os.makedirs(args.output_dir, exist_ok=True)
+    # Backward-compat alias used elsewhere in this file
+    args.layer_mode = args.layer_set
+
+    write_protocol_header(
+        args.output_dir,
+        {
+            "dataset": "kvasir-v2",
+            "split": args.split,
+            "arch": args.arch,
+            "checkpoint": args.checkpoint,
+            "methods": args.methods,
+            "base_cam": args.base_cam,
+            "enhanced_method": args.enhanced_method,
+            "layer_set": args.layer_set,
+            "step_size": args.step_size,
+            "road_seed": args.road_seed,
+            "road_imputation": args.road_imputation,
+            "max_images": args.max_images,
+            "batch_size": args.batch_size,
+            "layer_batch_size": args.layer_batch_size,
+        },
+    )
+
     base_cam_map = {
         "GradCAM": "GradCAMEnhanced",
         "GradCAM++": "GradCAMPlusPlusEnhanced",
@@ -188,11 +238,25 @@ def main():
         "ScoreCAM": "ScoreCAMEnhanced",
         "AblationCAM": "AblationCAMEnhanced",
     }
-    metrics_config = {"type": args.enhanced_method, "k": 5, "k_percent": 0.2, "temp": 0.05, "beta": 0.3, "soft": True}
+    metrics_config = {
+        "type": args.enhanced_method,
+        "k": 5,
+        "k_percent": 0.2,
+        "temp": 0.05,
+        "beta": 0.3,
+        "soft": True,
+    }
     extractor_kwargs_base = {"layer_batch_size": args.layer_batch_size}
     from XAI_Enhancer_module.enhanced_combiner.extractor_v2 import EnhancedExtractorV2
 
     methods = [m.strip().lower() for m in args.methods.split(",")]
+    # Treat "uniform" as enhancedcam with type=uniform
+    if "uniform" in methods and "enhancedcam" not in methods:
+        methods.append("enhancedcam")
+        if args.enhanced_method == "standard":
+            args.enhanced_method = "uniform"
+            metrics_config["type"] = "uniform"
+
     all_results = []
     # Determine whether to run standard methods
     has_standard_in_methods = any(
@@ -200,19 +264,37 @@ def main():
     )
     run_standard = args.compare_standard or has_standard_in_methods
 
-    # For enhanced aggregation methods that rely on multiple layers, default to 'all' layers
+    # Multi-layer aggregators need more than the last layer
     enhanced_layer_mode = args.layer_mode
-    if args.enhanced_method in ("stagewise", "topk", "temp", "pyramid") and enhanced_layer_mode == "last":
+    if (
+        args.enhanced_method in ("standard", "uniform", "stagewise", "topk", "temp", "pyramid")
+        and enhanced_layer_mode == "last"
+        and ("enhancedcam" in methods or "uniform" in methods)
+    ):
         print(
-            f"INFO: Enhanced method '{args.enhanced_method}' benefits from multiple layers. "
-            "Switching layer-mode from 'last' to 'all' for EnhancedCAM."
+            f"INFO: Enhanced method '{args.enhanced_method}' needs multiple layers. "
+            "Switching layer-set from 'last' to 'all' for Enhanced/Uniform CAM."
         )
         enhanced_layer_mode = "all"
 
+    eval_kw = dict(
+        step_size=args.step_size,
+        verbose=False,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        road_seed=args.road_seed,
+        road_imputation=args.road_imputation,
+    )
+
     # Enhanced CAM (if requested)
-    if "enhancedcam" in methods:
+    if "enhancedcam" in methods or "uniform" in methods:
         # Map chosen base CAM to its enhanced implementation
         enhanced_cam_name = base_cam_map[args.base_cam]
+        method_label = (
+            "Uniform (T→∞)"
+            if metrics_config["type"] == "uniform"
+            else f"EnhancedCAM ({args.base_cam})"
+        )
         evaluator = KvasirProperAUCEvaluator(
             checkpoint_path=args.checkpoint,
             data_root=args.data_root,
@@ -226,13 +308,12 @@ def main():
         )
         res = evaluator.evaluate_enhanced_cam(
             max_images=args.max_images,
-            step_size=args.step_size,
-            verbose=False,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
+            method_name=method_label,
+            per_image_path=per_image_stem(args.output_dir, method_label),
+            **eval_kw,
         )
         all_results.append({
-            "Method": f"EnhancedCAM ({args.base_cam})",
+            "Method": method_label,
             "Insertion_Mean": res["insertion_auc_mean"],
             "Insertion_Std": res["insertion_auc_std"],
             "Deletion_Mean": res["deletion_auc_mean"],
@@ -241,7 +322,7 @@ def main():
             "ROAD_Std": res["road_std"],
             "Images_Evaluated": res["num_images"],
         })
-        print(f"EnhancedCAM: Ins={res['insertion_auc_mean']:.4f} Del={res['deletion_auc_mean']:.4f} ROAD={res['road_mean']:.4f}")
+        print(f"{method_label}: Ins={res['insertion_auc_mean']:.4f} Del={res['deletion_auc_mean']:.4f} ROAD={res['road_mean']:.4f}")
 
     # Standard methods (single last layer only)
     standard_list = [
@@ -270,10 +351,9 @@ def main():
         )
         res = evaluator.evaluate_enhanced_cam(
             max_images=args.max_images,
-            step_size=args.step_size,
-            verbose=False,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
+            method_name=cam_name,
+            per_image_path=per_image_stem(args.output_dir, cam_name),
+            **eval_kw,
         )
         all_results.append({
             "Method": cam_name,
@@ -312,6 +392,10 @@ def main():
             max_images=args.max_images,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
+            step_size=args.step_size,
+            per_image_path=per_image_stem(args.output_dir, "LayerCAM"),
+            road_seed=args.road_seed,
+            road_imputation=args.road_imputation,
         )
         all_results.append({
             "Method": "LayerCAM",
@@ -346,6 +430,7 @@ def main():
         )
 
         insertion_aucs, deletion_aucs, road_scores = [], [], []
+        per_rows = []
         start_time = time.time()
         pbar = tqdm(loader, desc="LayerCAM-Fused", total=len(dataset))
         for i, (image_tensor, predicted_label, class_name, image_path_batch) in enumerate(pbar):
@@ -365,10 +450,19 @@ def main():
                 metrics = evaluator._evaluate_saliency_map(
                     image_tensor, saliency_map, pred_lbl,
                     step_size=args.step_size, verbose=False, batch_size=args.batch_size,
+                    road_seed=args.road_seed, road_imputation=args.road_imputation,
                 )
                 insertion_aucs.append(metrics["insertion_auc"])
                 deletion_aucs.append(metrics["deletion_auc"])
-                road_scores.append(np.mean([v for k, v in metrics.items() if k.startswith("road_")]))
+                road_scores.append(metrics.get("road", np.mean([v for k, v in metrics.items() if k.startswith("road_")])))
+                per_rows.append(
+                    evaluator._row_from_metrics(
+                        image_id=str(image_path_batch[0]),
+                        method="LayerCAM-Fused",
+                        predicted_label=pred_lbl,
+                        metrics=metrics,
+                    )
+                )
 
                 pbar.set_postfix({
                     "Ins": f"{np.mean(insertion_aucs):.3f}",
@@ -379,6 +473,7 @@ def main():
                 print(f"Error processing image {i}: {e}")
                 continue
 
+        evaluator._write_per_image_log(per_rows, per_image_stem(args.output_dir, "LayerCAM-Fused"))
         res_fused = {
             "insertion_auc_mean": np.mean(insertion_aucs),
             "insertion_auc_std": np.std(insertion_aucs),
@@ -470,6 +565,7 @@ def main():
         )
 
         insertion_aucs, deletion_aucs, road_scores = [], [], []
+        per_rows = []
         pbar = tqdm(loader, desc="HR-CAM", total=len(dataset))
         for i, (image_tensor, predicted_label, class_name, image_path_batch) in enumerate(pbar):
             try:
@@ -485,10 +581,19 @@ def main():
                 metrics = evaluator._evaluate_saliency_map(
                     image_tensor, saliency_map, pred_lbl,
                     step_size=args.step_size, verbose=False, batch_size=args.batch_size,
+                    road_seed=args.road_seed, road_imputation=args.road_imputation,
                 )
                 insertion_aucs.append(metrics["insertion_auc"])
                 deletion_aucs.append(metrics["deletion_auc"])
-                road_scores.append(np.mean([v for k, v in metrics.items() if k.startswith("road_")]))
+                road_scores.append(metrics.get("road", np.mean([v for k, v in metrics.items() if k.startswith("road_")])))
+                per_rows.append(
+                    evaluator._row_from_metrics(
+                        image_id=str(image_path_batch[0]),
+                        method="HR-CAM",
+                        predicted_label=pred_lbl,
+                        metrics=metrics,
+                    )
+                )
 
                 pbar.set_postfix({
                     "Ins": f"{np.mean(insertion_aucs):.3f}",
@@ -499,6 +604,7 @@ def main():
                 print(f"Error processing image {i}: {e}")
                 continue
 
+        evaluator._write_per_image_log(per_rows, per_image_stem(args.output_dir, "HR-CAM"))
         res_hrcam = {
             "insertion_auc_mean": np.mean(insertion_aucs),
             "insertion_auc_std": np.std(insertion_aucs),

@@ -32,6 +32,21 @@ class EnhancedCAMAggregator:
         return final_cam
 
     @staticmethod
+    def aggregate_uniform(cams: List[torch.Tensor], scores: np.ndarray = None) -> torch.Tensor:
+        """
+        Uniform multi-layer average (T→∞ baseline): w_l = 1/L.
+        ``scores`` is ignored; kept for signature parity with other aggregators.
+        """
+        n = len(cams)
+        if n == 0:
+            raise ValueError("aggregate_uniform requires at least one CAM")
+        weight = 1.0 / float(n)
+        final_cam = torch.zeros_like(cams[0])
+        for cam in cams:
+            final_cam = final_cam + weight * cam
+        return final_cam
+
+    @staticmethod
     def aggregate_temperature(cams: List[torch.Tensor], scores: np.ndarray, temp: float = 0.1) -> torch.Tensor:
         """
         Temperature Scaling: Softmax(scores / temp) * CAMs.
@@ -172,7 +187,7 @@ class EnhancedCAMAggregator:
         """
         Flexible aggregator.
         method_config = {
-          "type": "stagewise" | "topk" | "temp" | "standard",
+          "type": "stagewise" | "topk" | "temp" | "standard" | "uniform" | "pyramid",
           "k": 5,
           "temp": 0.1,
           "soft": True
@@ -192,6 +207,8 @@ class EnhancedCAMAggregator:
                                                                temp=method_config.get("temp", 1.0))
         elif m_type == "pyramid":
              return EnhancedCAMAggregator.aggregate_pyramid_fusion(cams, scores, layer_shapes, method_config)
+        elif m_type == "uniform":
+            return EnhancedCAMAggregator.aggregate_uniform(cams, scores)
         else:
             return EnhancedCAMAggregator.aggregate_standard(cams, scores)
 

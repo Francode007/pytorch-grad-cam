@@ -298,139 +298,134 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
     def evaluate_road(self, image_tensor: torch.Tensor, 
                      saliency_map: np.ndarray, predicted_label: int,
                      thresholds: List[int] = [20, 40, 60, 80],
-                     imputation: str = "blur") -> Dict[str, float]:
+                     imputation: str = "blur",
+                     road_seed: int = 0) -> Dict[str, float]:
         """
-        Evaluate ROAD (Remove and Debias) score at multiple thresholds.
-        
-        Args:
-            image_tensor: Input image tensor (C, H, W)
-            saliency_map: Saliency map (H, W) or (1, H, W)
-            predicted_label: Target class index
-            thresholds: List of percentile thresholds to remove (e.g., [20, 40] removes top 20% and 40%)
-            imputation: Imputation strategy ("blur", "black")
-            
-        Returns:
-            Dictionary mapping "road_{threshold}" to the score.
-        """
+        Evaluate ROAD at multiple thresholds for MoRF and LeRF directions.
 
-        import torch
-        import numpy as np
+        Returns keys:
+          road_{p}_morf, road_{p}_lerf for each percentile p,
+          road_morf / road_lerf (means), and road = (lerf - morf) / 2
+          matching ROADCombined's combined score.
+        """
         import torchvision.transforms.functional as TF
-        
-        # Ensure image tensor is on the correct device
+
+        # Seed before any stochastic imputation path (blur is deterministic today).
+        torch.manual_seed(int(road_seed))
+        np.random.seed(int(road_seed))
+
         image_tensor = image_tensor.to(self.device).clone()
         if image_tensor.dim() == 4:
             image_tensor = image_tensor.squeeze(0)
-            
-        # Ensure saliency map is correct shape
+
         if len(saliency_map.shape) == 3:
             saliency_map = saliency_map[0]
-            
-        flat_saliency = saliency_map.flatten()
-        
-        # Prepare batch of modified images
-        # First element is the original image for baseline reference
-        batch_images = [image_tensor]
-        
-        # Create imputation background
+
         if imputation == "blur":
-            # Apply Gaussian blur
-            # Kernel size should be odd, e.g., 11x11, sigma 5.0
-            blurred_image = TF.gaussian_blur(image_tensor, kernel_size=11, sigma=5.0)
-            imputation_tensor = blurred_image
-        else: # "black" or default
+            imputation_tensor = TF.gaussian_blur(image_tensor, kernel_size=11, sigma=5.0)
+        else:
             imputation_tensor = torch.zeros_like(image_tensor)
-            
-        # Pre-calculate flattened views for efficient indexing
-        image_flat = image_tensor.view(image_tensor.shape[0], -1)
+
         imputation_flat = imputation_tensor.view(imputation_tensor.shape[0], -1)
-        
-        for p in thresholds:
-            # Determine threshold value for top p% pixels
-            # e.g., p=20 means we remove pixels > 80th percentile
-            percentile_val = np.percentile(flat_saliency, 100 - p)
-            
-            mask = (saliency_map > percentile_val) # Pixels to remove
-            mask_flat = mask.flatten()
-            mask_indices = torch.where(torch.from_numpy(mask_flat).to(self.device))[0]
-            
-            # Create modified image
-            modified = image_tensor.clone()
-            modified_flat = modified.view(modified.shape[0], -1)
-            
-            # Replace important pixels with imputation values
-            modified_flat[:, mask_indices] = imputation_flat[:, mask_indices]
-            
-            batch_images.append(modified)
-            
-        # Process entire batch in one go
+        batch_images = [image_tensor]
+        directions = []  # (p, direction) parallel to batch_images[1:]
+
+        for direction in ("morf", "lerf"):
+            for p in thresholds:
+                if direction == "morf":
+                    # Remove top-p% most salient pixels
+                    percentile_val = np.percentile(saliency_map, 100 - p)
+                    mask = saliency_map >= percentile_val
+                else:
+                    # Remove bottom-p% least salient pixels
+                    percentile_val = np.percentile(saliency_map, p)
+                    mask = saliency_map <= percentile_val
+
+                mask_indices = torch.where(
+                    torch.from_numpy(mask.flatten()).to(self.device)
+                )[0]
+                modified = image_tensor.clone()
+                modified_flat = modified.view(modified.shape[0], -1)
+                modified_flat[:, mask_indices] = imputation_flat[:, mask_indices]
+                batch_images.append(modified)
+                directions.append((p, direction))
+
         batch_tensor = torch.stack(batch_images)
-        
         self.clean_model.eval()
         with torch.no_grad():
-            if self.device.type == 'cuda':
-                with torch.amp.autocast('cuda'):
+            if self.device.type == "cuda":
+                with torch.amp.autocast("cuda"):
                     outputs = self.clean_model(batch_tensor)
             else:
                 outputs = self.clean_model(batch_tensor)
-                
             probs = torch.softmax(outputs, dim=1)[:, predicted_label]
-            
-        # Calculate scores
+
         original_conf = probs[0].item()
-        results = {}
-        
-        for i, p in enumerate(thresholds):
-            modified_conf = probs[i+1].item()
-            # ROAD score is the drop in confidence
-            # Ensure non-negative
+        results: Dict[str, float] = {"conf": float(original_conf)}
+        morf_vals: List[float] = []
+        lerf_vals: List[float] = []
+
+        for i, (p, direction) in enumerate(directions):
+            modified_conf = probs[i + 1].item()
+            # Confidence drop (clipped); LeRF drop is often small / negative → clip
             diff = float(max(0.0, original_conf - modified_conf))
-            results[f"road_{p}"] = diff
-            
+            key = f"road_{p}_{direction}"
+            results[key] = diff
+            # Keep legacy alias for MoRF so old summary code still works
+            if direction == "morf":
+                results[f"road_{p}"] = diff
+                morf_vals.append(diff)
+            else:
+                lerf_vals.append(diff)
+
+        results["road_morf"] = float(np.mean(morf_vals)) if morf_vals else 0.0
+        results["road_lerf"] = float(np.mean(lerf_vals)) if lerf_vals else 0.0
+        # Combined ROAD (higher is better), same convention as ROADCombined
+        results["road"] = float((results["road_lerf"] - results["road_morf"]) / 2.0)
         return results
-    
+
     def _evaluate_saliency_map(self, image_tensor: torch.Tensor, saliency_map: np.ndarray, 
                               predicted_label: int, step_size: int = 50, verbose: bool = False, 
-                              batch_size: int = 64) -> Dict[str, float]:
+                              batch_size: int = 64,
+                              road_seed: int = 0,
+                              road_imputation: str = "blur") -> Dict[str, float]:
         """
         Evaluate a single saliency map using insertion AUC, deletion AUC, and ROAD metrics.
-        Returns a dictionary of all metrics.
+        Returns a dictionary of all metrics (including per-threshold MoRF/LeRF).
         """
         try:
             results = {}
-            
-            # Compute insertion AUC
+
             _, insertion_auc = self.compute_insertion_auc(
                 image_tensor, saliency_map, predicted_label, step_size, batch_size
             )
-            results['insertion_auc'] = insertion_auc
-            
-            # Compute deletion AUC  
+            results["insertion_auc"] = insertion_auc
+
             _, deletion_auc = self.compute_deletion_auc(
                 image_tensor, saliency_map, predicted_label, step_size, batch_size
             )
-            results['deletion_auc'] = deletion_auc
-            
-            # Compute ROAD score (multi-threshold)
+            results["deletion_auc"] = deletion_auc
+
             road_scores = self.evaluate_road(
                 image_tensor, saliency_map, predicted_label,
                 thresholds=[20, 40, 60, 80],
-                imputation="blur"
+                imputation=road_imputation,
+                road_seed=road_seed,
             )
             results.update(road_scores)
-            
+
             if verbose:
                 print(f"        Insertion AUC: {insertion_auc:.4f}")
                 print(f"        Deletion AUC: {deletion_auc:.4f}")
                 print(f"        ROAD Scores: {road_scores}")
-            
+
             return results
-            
+
         except Exception as e:
             print(f"        Error in saliency evaluation: {e}")
             import traceback
             traceback.print_exc()
-            return {'insertion_auc': 0.0, 'deletion_auc': 0.0}
+            return {"insertion_auc": 0.0, "deletion_auc": 0.0, "road": 0.0}
     
     def _load_synset_mapping(self) -> Dict[str, str]:
         """Load ImageNet synset mapping from LOC_synset_mapping.txt"""
@@ -453,36 +448,73 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         return synset_mapping
     
     def _get_enhanced_cam_layers(self, layer_mode: str = "last") -> List[torch.nn.Module]:
-        """Get conv layers for Enhanced CAM extraction based on the specified mode."""
-        all_conv_layers = []
-        
-        # Collect all convolutional layers
-        for name, module in self.model.named_modules():
-            if isinstance(module, (torch.nn.Conv2d, torch.nn.Conv1d, torch.nn.Conv3d)):
-                all_conv_layers.append(module)
-        
-        if not all_conv_layers:
-            raise ValueError(f"No convolutional layers found in model {self.model_name}")
-        
-        print(f"Found {len(all_conv_layers)} total convolutional layers")
-        
-        # Select layers based on mode
-        if layer_mode == "all":
-            selected_layers = all_conv_layers
-            print(f"Selected all {len(selected_layers)} convolutional layers")
-            
-        elif layer_mode == "last_5":
-            selected_layers = all_conv_layers[-5:] if len(all_conv_layers) >= 5 else all_conv_layers
-            print(f"Selected last {len(selected_layers)} convolutional layers (requested 5)")
-            
-        elif layer_mode == "last":
-            selected_layers = [all_conv_layers[-1]]
-            print(f"Selected last convolutional layer")
-            
-        else:
-            raise ValueError(f"Invalid layer_mode '{layer_mode}'. Must be one of ['all', 'last_5', 'last']")
-        
+        """Get target layers for CAM extraction (see common.layer_sets)."""
+        from XAI_Enhancer_module.common.layer_sets import select_cam_layers
+
+        arch = getattr(self, "model_name", None) or ""
+        selected_layers = select_cam_layers(self.model, layer_mode, arch=arch)
+        print(
+            f"Layer set '{layer_mode}': selected {len(selected_layers)} "
+            f"target module(s) (arch={arch})"
+        )
         return selected_layers
+
+    @staticmethod
+    def _write_per_image_log(rows: List[Dict], output_path: str) -> str:
+        """Persist per-image metrics to CSV (and Parquet when pyarrow/fastparquet is available)."""
+        if not rows:
+            return ""
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        df = pd.DataFrame(rows)
+        csv_path = output_path if output_path.endswith(".csv") else f"{output_path}.csv"
+        if not csv_path.endswith(".csv"):
+            csv_path = output_path + ".csv"
+        # Normalize: always write .csv; optionally sibling .parquet
+        if output_path.endswith(".parquet"):
+            csv_path = output_path[:-8] + ".csv"
+            parquet_path = output_path
+        elif output_path.endswith(".csv"):
+            csv_path = output_path
+            parquet_path = output_path[:-4] + ".parquet"
+        else:
+            csv_path = output_path + ".csv"
+            parquet_path = output_path + ".parquet"
+
+        df.to_csv(csv_path, index=False)
+        try:
+            df.to_parquet(parquet_path, index=False)
+            print(f"Per-image metrics -> {csv_path} (+ {parquet_path})")
+        except Exception:
+            print(f"Per-image metrics -> {csv_path} (parquet skipped: no engine)")
+        return csv_path
+
+    def _row_from_metrics(
+        self,
+        *,
+        image_id: str,
+        method: str,
+        predicted_label: int,
+        metrics: Dict[str, float],
+        layer_scores: Optional[np.ndarray] = None,
+    ) -> Dict:
+        road_keys = [k for k in metrics if k.startswith("road_")]
+        row = {
+            "image_id": image_id,
+            "method": method,
+            "pred": int(predicted_label),
+            "conf": float(metrics.get("conf", np.nan)),
+            "ins": float(metrics.get("insertion_auc", np.nan)),
+            "del": float(metrics.get("deletion_auc", np.nan)),
+            "road": float(metrics.get("road", np.nan)),
+            "road_morf": float(metrics.get("road_morf", np.nan)),
+            "road_lerf": float(metrics.get("road_lerf", np.nan)),
+        }
+        for k in sorted(road_keys):
+            row[k] = float(metrics[k])
+        if layer_scores is not None:
+            for li, s in enumerate(np.asarray(layer_scores).reshape(-1)):
+                row[f"S_l_{li}"] = float(s)
+        return row
     
     def get_imagenet_images(self, max_images: int = 50, classes_filter: List[str] = None,
                           start_index: int = 0, end_index: int = None) -> Tuple[List[str], List[int], List[str]]:
@@ -624,19 +656,16 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
     def evaluate_enhanced_cam(self, max_images: int = 50, step_size: int = 50, 
                             verbose: bool = True, classes_filter: List[str] = None,
                             start_index: int = 0, end_index: int = None,
-                            return_raw_data: bool = False, batch_size: int = 64, num_workers: int = 4) -> Dict[str, any]:
+                            return_raw_data: bool = False, batch_size: int = 64, num_workers: int = 4,
+                            method_name: str = "EnhancedCAM",
+                            per_image_path: Optional[str] = None,
+                            road_seed: int = 0,
+                            road_imputation: str = "blur") -> Dict[str, any]:
         """
-        Evaluate Enhanced CAM method on ImageNet with proper AUC calculations.
-        
-        Args:
-            max_images: Maximum number of images to evaluate
-            step_size: Step size for insertion/deletion evaluation
-            verbose: If True, show detailed logging for each image
-            classes_filter: List of ImageNet class names to filter
-            batch_size: Batch size for evaluation inference
-        
-        Returns:
-            Dictionary with evaluation results
+        Evaluate Enhanced CAM method with proper AUC calculations.
+
+        When ``per_image_path`` is set, writes one row per image (CSV + Parquet)
+        so later stats (bootstrap / Wilcoxon) need no re-perturbation.
         """
         # Get ImageNet images and predictions
         image_paths, predicted_labels, class_names = self.get_imagenet_images(
@@ -651,7 +680,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             print(f"📢 Large dataset detected ({len(image_paths)} images). Setting verbose=False for cleaner output.")
             verbose = False
         
-        print(f"\nEvaluating Enhanced CAM on {len(image_paths)} ImageNet images...")
+        print(f"\nEvaluating {method_name} on {len(image_paths)} images...")
         print(f"Using step_size={step_size} and batch_size={batch_size} for proper evaluation...")
         print(f"Using {num_workers} workers for data loading...")
         
@@ -661,6 +690,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         insertion_aucs = []
         deletion_aucs = []
         road_scores = []
+        per_image_rows: List[Dict] = []
         
         # Create dataset and loader (use passed batch_size; avoid large batches that cause OOM)
         dataset = _ImageNetDataset(image_paths, predicted_labels, class_names, self.transform)
@@ -675,7 +705,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         )
         
         # Create progress description based on verbosity
-        progress_desc = "Processing Enhanced CAM"
+        progress_desc = f"Processing {method_name}"
         
         start_time = time.time()
         images_processed = 0
@@ -683,62 +713,55 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         pbar = tqdm(loader, desc=progress_desc, total=num_batches, unit="batch")
         for i, (image_tensor, predicted_label, class_name, image_path_batch) in enumerate(pbar):
             try:
-                # Unpack batch (size 1)
-                # Unpack batch 
-                # image_tensor: [B, C, H, W]
-                # predicted_label: [B]
-                # image_path_batch: tuple of B paths
-                
-                # Check actual batch size
                 current_batch_size = image_tensor.shape[0]
                 
                 if verbose:
                     print(f"\n--- Processing Batch {i+1} : {current_batch_size} images ---")
                 
-                # Extract Enhanced CAM (Batched)
-                # We pass the pre-loaded tensor batch directly!
-                # predicted_label needs to be list of ints
                 pred_label_list = predicted_label.tolist()
                 
                 _, saliency_maps = self.extract_enhanced_cam(image_tensor, pred_label_list)
-                # saliency_maps is [B, H, W] tensor (gpu)
-                
-                # Evaluate Saliency Maps (Batched or Loop)
-                # _evaluate_saliency_map currently handles ONE image.
-                # We need to loop over the batch here, OR refactor _evaluate_saliency_map.
-                # Since metrics (Insertion/Deletion) take [C, H, W] and map [H, W], let's loop for now
-                # BUT the metric computation itself is batched (it creates variants).
-                # So we just run the metric function B times.
-                
-                batch_insertion = []
-                batch_deletion = []
-                batch_road = []
-                
+                layer_scores_batch = None
+                if self.enhanced_cam_extractor is not None:
+                    layer_scores_batch = getattr(
+                        self.enhanced_cam_extractor, "last_layer_scores", None
+                    )
+
                 saliency_maps_np = saliency_maps.cpu().numpy()
                 
                 for b in range(current_batch_size):
                     img_t = image_tensor[b]
                     sal_np = saliency_maps_np[b]
                     lbl = pred_label_list[b]
+                    img_id = image_path_batch[b]
+                    if isinstance(img_id, (list, tuple)):
+                        img_id = img_id[0]
                     
-                    # Run metrics
                     metrics = self._evaluate_saliency_map(
-                        img_t, sal_np, lbl, step_size, verbose=False, batch_size=batch_size
+                        img_t, sal_np, lbl, step_size, verbose=False, batch_size=batch_size,
+                        road_seed=road_seed, road_imputation=road_imputation,
                     )
                     
                     insertion_aucs.append(metrics['insertion_auc'])
                     deletion_aucs.append(metrics['deletion_auc'])
-                    # Handle ROAD 
-                    # metrics has 'road_20', etc.
-                    # We average them or store raw? existing code does:
-                    # 'ROAD_Mean': enhanced_res['road_mean']
-                    # So we should gather all keys.
-                    # But wait, original code accumulates results in `all_results`.
-                    # Here we are just creating lists.
-                    
-                    # Let's extract road mean for now
-                    r_mean = np.mean([v for k,v in metrics.items() if k.startswith('road_')])
+                    r_mean = metrics.get(
+                        "road",
+                        np.mean([v for k, v in metrics.items() if k.startswith("road_")]),
+                    )
                     road_scores.append(r_mean)
+
+                    ls = None
+                    if layer_scores_batch is not None and b < len(layer_scores_batch):
+                        ls = layer_scores_batch[b]
+                    per_image_rows.append(
+                        self._row_from_metrics(
+                            image_id=str(img_id),
+                            method=method_name,
+                            predicted_label=lbl,
+                            metrics=metrics,
+                            layer_scores=ls,
+                        )
+                    )
                 
                 if verbose:
                     print(f"    Insertion AUC: {metrics['insertion_auc']:.4f}")
@@ -784,9 +807,18 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             'road_mean': np.mean(road_scores),
             'road_std': np.std(road_scores),
             'num_images': len(insertion_aucs),
-            'classes_evaluated': classes_filter if classes_filter else 'All ImageNet classes'
+            'classes_evaluated': classes_filter if classes_filter else 'All ImageNet classes',
+            'step_size': step_size,
+            'road_seed': road_seed,
+            'road_imputation': road_imputation,
+            'method': method_name,
         }
         
+        if per_image_path:
+            results["per_image_path"] = self._write_per_image_log(per_image_rows, per_image_path)
+        elif return_raw_data:
+            results["per_image_rows"] = per_image_rows
+
         if return_raw_data:
             results.update({
                 'insertion_aucs': insertion_aucs,
@@ -799,18 +831,15 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
     def evaluate_method(self, cam_method_name: str, max_images: int = 50, 
                        classes_filter: List[str] = None,
                        start_index: int = 0, end_index: int = None,
-                       return_raw_data: bool = False, batch_size: int = 64, num_workers: int = 4) -> Dict[str, any]:
+                       return_raw_data: bool = False, batch_size: int = 64, num_workers: int = 4,
+                       step_size: int = 224,
+                       per_image_path: Optional[str] = None,
+                       road_seed: int = 0,
+                       road_imputation: str = "blur") -> Dict[str, any]:
         """
-        Evaluate a standard CAM method on ImageNet.
-        
-        Args:
-            cam_method_name: Name of the CAM method
-            max_images: Maximum number of images to evaluate
-            classes_filter: List of ImageNet class names to filter
-            batch_size: Batch size for evaluation inference
-            
-        Returns:
-            Dictionary with evaluation results
+        Evaluate a standard CAM method.
+
+        When ``per_image_path`` is set, writes one row per image (CSV + Parquet).
         """
 
         # Get ImageNet images and predictions
@@ -821,12 +850,13 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             end_index=end_index
         )
         
-        print(f"\nEvaluating {cam_method_name} on {len(image_paths)} ImageNet images...")
-        print(f"Using {num_workers} workers for data loading...")
+        print(f"\nEvaluating {cam_method_name} on {len(image_paths)} images...")
+        print(f"Using step_size={step_size}, {num_workers} workers for data loading...")
         
         insertion_aucs = []
         deletion_aucs = []
         road_scores = []
+        per_image_rows: List[Dict] = []
         
         # Create dataset and loader
         dataset = _ImageNetDataset(image_paths, predicted_labels, class_names, self.transform)
@@ -856,12 +886,22 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
                 # Use pre-fetched image_tensor for evaluation
                 # Evaluate saliency map
                 metrics = self._evaluate_saliency_map(
-                    image_tensor, saliency_map, predicted_label, step_size=50, verbose=False, batch_size=batch_size
+                    image_tensor, saliency_map, predicted_label,
+                    step_size=step_size, verbose=False, batch_size=batch_size,
+                    road_seed=road_seed, road_imputation=road_imputation,
                 )
                 
                 insertion_aucs.append(metrics['insertion_auc'])
                 deletion_aucs.append(metrics['deletion_auc'])
-                road_scores.append(metrics.get('road_20', 0.0))
+                road_scores.append(metrics.get('road', metrics.get('road_20', 0.0)))
+                per_image_rows.append(
+                    self._row_from_metrics(
+                        image_id=str(image_path),
+                        method=cam_method_name,
+                        predicted_label=predicted_label,
+                        metrics=metrics,
+                    )
+                )
                 
                 # Update progress bar with current means
                 current_ins_mean = np.mean(insertion_aucs)
@@ -901,9 +941,18 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
             'road_mean': np.mean(road_scores),
             'road_std': np.std(road_scores),
             'num_images': len(insertion_aucs),
-            'classes_evaluated': classes_filter if classes_filter else 'All ImageNet classes'
+            'classes_evaluated': classes_filter if classes_filter else 'All ImageNet classes',
+            'step_size': step_size,
+            'road_seed': road_seed,
+            'road_imputation': road_imputation,
+            'method': cam_method_name,
         }
         
+        if per_image_path:
+            results["per_image_path"] = self._write_per_image_log(per_image_rows, per_image_path)
+        elif return_raw_data:
+            results["per_image_rows"] = per_image_rows
+
         if return_raw_data:
             results.update({
                 'insertion_aucs': insertion_aucs,

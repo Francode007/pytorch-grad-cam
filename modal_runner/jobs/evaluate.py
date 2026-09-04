@@ -80,47 +80,46 @@ def eval_kvasir_cams(
     arch: str = "resnet50",
     checkpoint: Optional[str] = None,
     split: str = "test",
-    methods: Optional[Sequence[str]] = None,
+    seed: int = 42,
+    methods: Optional[Sequence[str] | str] = None,
     enhanced_method: str = "standard",
-    layer_mode: str = "all",
+    layer_set: str = "all",
     max_images: int = -1,
     batch_size: int = 16,
     layer_batch_size: int = 8,
+    step_size: int = 224,
+    road_seed: int = 0,
     output_dir: Optional[str] = None,
     extra_args: Optional[Sequence[str]] = None,
 ) -> str:
     ensure_layout()
     configure_torch_home()
-    ckpt = checkpoint or str(KVASIR_RUNS / arch / "best.pth")
+    ckpt = checkpoint or str(KVASIR_RUNS / arch / f"seed{seed}" / "best.pth")
     if not Path(ckpt).exists():
-        raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
-    out = output_dir or str(KVASIR_RUNS / arch / "cam_eval")
+        legacy = KVASIR_RUNS / arch / "best.pth"
+        if legacy.exists() and not checkpoint:
+            ckpt = str(legacy)
+        else:
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
+    out = output_dir or str(Path(ckpt).parent / "cam_eval")
     args: List[str] = [
-        "--data-root",
-        str(KVASIR_ROOT),
-        "--arch",
-        arch,
-        "--checkpoint",
-        ckpt,
-        "--split",
-        split,
-        "--enhanced-method",
-        enhanced_method,
-        "--layer-mode",
-        layer_mode,
-        "--batch-size",
-        str(batch_size),
-        "--layer-batch-size",
-        str(layer_batch_size),
-        "--max-images",
-        str(max_images),
-        "--output-dir",
-        out,
-        "--device",
-        "cuda",
+        "--data-root", str(KVASIR_ROOT),
+        "--arch", arch,
+        "--checkpoint", ckpt,
+        "--split", split,
+        "--enhanced-method", enhanced_method,
+        "--layer-set", layer_set,
+        "--batch-size", str(batch_size),
+        "--layer-batch-size", str(layer_batch_size),
+        "--step-size", str(step_size),
+        "--road-seed", str(road_seed),
+        "--max-images", str(max_images),
+        "--output-dir", out,
+        "--device", "cuda",
     ]
     if methods:
-        args.extend(["--methods", *methods])
+        method_str = methods if isinstance(methods, str) else ",".join(methods)
+        args.extend(["--methods", method_str])
     if extra_args:
         args.extend(extra_args)
     run_module("XAI_Enhancer_module.kvasir.eval_cams", args)
@@ -132,44 +131,47 @@ def eval_ibs_cams(
     arch: str = "resnet50",
     checkpoint: Optional[str] = None,
     split: str = "test",
+    fold: int = 0,
+    methods: Optional[Sequence[str] | str] = None,
     enhanced_method: str = "standard",
-    layer_mode: str = "all",
+    layer_set: str = "all",
     max_images: int = -1,
     batch_size: int = 16,
     layer_batch_size: int = 8,
+    step_size: int = 224,
+    road_seed: int = 0,
     output_dir: Optional[str] = None,
     extra_args: Optional[Sequence[str]] = None,
 ) -> str:
     ensure_layout()
     configure_torch_home()
-    ckpt = checkpoint or str(IBS_RUNS / arch / "best.pth")
+    ckpt = checkpoint or str(IBS_RUNS / arch / f"fold{fold}" / "best.pth")
     if not Path(ckpt).exists():
-        raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
-    out = output_dir or str(IBS_RUNS / arch / "cam_eval")
+        legacy = IBS_RUNS / arch / "best.pth"
+        if legacy.exists() and not checkpoint:
+            ckpt = str(legacy)
+        else:
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
+    out = output_dir or str(Path(ckpt).parent / "cam_eval")
     args: List[str] = [
-        "--data-root",
-        str(IBS_ROOT),
-        "--arch",
-        arch,
-        "--checkpoint",
-        ckpt,
-        "--split",
-        split,
-        "--enhanced-method",
-        enhanced_method,
-        "--layer-mode",
-        layer_mode,
-        "--batch-size",
-        str(batch_size),
-        "--layer-batch-size",
-        str(layer_batch_size),
-        "--max-images",
-        str(max_images),
-        "--output-dir",
-        out,
-        "--device",
-        "cuda",
+        "--data-root", str(IBS_ROOT),
+        "--arch", arch,
+        "--fold", str(fold),
+        "--checkpoint", ckpt,
+        "--split", split,
+        "--enhanced-method", enhanced_method,
+        "--layer-set", layer_set,
+        "--batch-size", str(batch_size),
+        "--layer-batch-size", str(layer_batch_size),
+        "--step-size", str(step_size),
+        "--road-seed", str(road_seed),
+        "--max-images", str(max_images),
+        "--output-dir", out,
+        "--device", "cuda",
     ]
+    if methods:
+        method_str = methods if isinstance(methods, str) else ",".join(methods)
+        args.extend(["--methods", method_str])
     if extra_args:
         args.extend(extra_args)
     run_module("XAI_Enhancer_module.ibs.eval_cams", args)
