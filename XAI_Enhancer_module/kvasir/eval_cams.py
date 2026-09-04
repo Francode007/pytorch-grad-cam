@@ -205,12 +205,20 @@ def parse_args():
 
 
 def main():
+    from XAI_Enhancer_module.common.resource_monitor import ResourceMonitor
+
     args = parse_args()
     args.split = enforce_eval_split(args.split, allow_val=args.allow_val)
     os.makedirs(args.output_dir, exist_ok=True)
     # Backward-compat alias used elsewhere in this file
     args.layer_mode = args.layer_set
 
+    with ResourceMonitor(label=f"kvasir.eval_cams arch={args.arch}") as mon:
+        _main_body(args)
+    mon.write(Path(args.output_dir) / "resources.json")
+
+
+def _main_body(args):
     write_protocol_header(
         args.output_dir,
         {

@@ -235,19 +235,31 @@ modal volume get xai-enhancer-vol /runs/kvasir/resnet50/cam_eval ./modal_artifac
 
 **Goal:** bootstrap 95% CI, paired Wilcoxon (Holm), Cliff's δ, win/tie/loss from per-image CSVs.
 
-### Code still to land
+**Status:** code landed — **CPU-only** Modal job (`stats`), 8 vCPU / 64 GB RAM, no GPU.
+
+### Code landed
 
 | Piece | Path |
 |-------|------|
-| Stats script | `analysis/stats.py` (new) |
+| Stats script | `analysis/stats.py` |
+| Resource monitor | `common/resource_monitor.py` (GPU alloc + RAM peak) |
 | Modal job | `modal_runner/jobs/stats.py` + `app.py` action `stats` |
+| Parallel CAM methods | `eval-*-cams-wave` (one A100 per method, detach-safe) |
 
-### Modal / local commands (after code lands)
+### Modal / local commands
 
 ```bash
-# Prefer pulling CSVs and running stats locally (CPU, cheap), OR:
-# modal run -m modal_runner.app -- stats --input-dir /vol/runs/kvasir
+# Parallel method wave (example: 5 methods × A100)
+modal run --detach -m modal_runner.app -- eval-kvasir-cams-wave \
+  --arch resnet18 --seed 42 --split test \
+  --methods gradcam,gradcampp,hirescam,enhancedcam,uniform
 
+# Stats (CPU, high RAM — after per-image CSVs exist)
+modal run --detach -m modal_runner.app -- stats \
+  --input-dir /vol/runs \
+  --output-dir /vol/runs/stats
+
+# Or pull and run locally:
 modal volume get xai-enhancer-vol /runs ./modal_artifacts/runs
 python -m XAI_Enhancer_module.analysis.stats \
   --input-dir ./modal_artifacts/runs \

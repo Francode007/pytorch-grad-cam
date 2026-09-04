@@ -17,14 +17,18 @@ import modal
 
 from modal_runner.config import (
     APP_NAME,
+    DEFAULT_CAM_METHODS,
     GPU_TRAIN,
     IBS_ARCHS,
     IBS_FOLDS,
     KVASIR_ARCHS,
     SECRET_KAGGLE,
+    STATS_CPU,
+    STATS_MEMORY_MB,
     TIMEOUT_DOWNLOAD_S,
     TIMEOUT_EVAL_S,
     TIMEOUT_IBS_CV_S,
+    TIMEOUT_STATS_S,
     TIMEOUT_TRAIN_S,
     VOL_ROOT,
     VOLUME_NAME,
@@ -674,6 +678,238 @@ def eval_ibs_cams(
     return msg
 
 
+@app.function(
+    image=image,
+    volumes=_VOLUMES,
+    gpu=GPU_TRAIN,
+    timeout=TIMEOUT_EVAL_S,
+    memory=65536,
+)
+def eval_kvasir_cams_method(
+    method: str,
+    arch: str = "resnet18",
+    checkpoint: Optional[str] = None,
+    split: str = "test",
+    seed: int = 42,
+    enhanced_method: str = "standard",
+    layer_set: str = "all",
+    max_images: int = -1,
+    output_root: Optional[str] = None,
+) -> str:
+    """One method on one A100 (first arg varies for .map)."""
+    from modal_runner.jobs.evaluate import _method_slug, eval_kvasir_cams as _job
+    from modal_runner.config import KVASIR_RUNS
+
+    root = output_root or str(KVASIR_RUNS / arch / f"seed{seed}" / "cam_eval")
+    out = f"{root}/by_method/{_method_slug(method)}"
+    msg = _job(
+        arch=arch,
+        checkpoint=checkpoint,
+        split=split,
+        seed=seed,
+        enhanced_method=enhanced_method,
+        layer_set=layer_set,
+        methods=method,
+        max_images=max_images,
+        output_dir=out,
+    )
+    _commit()
+    return msg
+
+
+@app.function(
+    image=image,
+    volumes=_VOLUMES,
+    gpu=GPU_TRAIN,
+    timeout=TIMEOUT_EVAL_S,
+    memory=65536,
+)
+def eval_ibs_cams_method(
+    method: str,
+    arch: str = "resnet18",
+    checkpoint: Optional[str] = None,
+    split: str = "test",
+    fold: int = 0,
+    enhanced_method: str = "standard",
+    layer_set: str = "all",
+    max_images: int = -1,
+    output_root: Optional[str] = None,
+) -> str:
+    """One method on one A100 (first arg varies for .map)."""
+    from modal_runner.jobs.evaluate import _method_slug, eval_ibs_cams as _job
+    from modal_runner.config import IBS_RUNS
+
+    root = output_root or str(IBS_RUNS / arch / f"fold{fold}" / "cam_eval")
+    out = f"{root}/by_method/{_method_slug(method)}"
+    msg = _job(
+        arch=arch,
+        checkpoint=checkpoint,
+        split=split,
+        fold=fold,
+        enhanced_method=enhanced_method,
+        layer_set=layer_set,
+        methods=method,
+        max_images=max_images,
+        output_dir=out,
+    )
+    _commit()
+    return msg
+
+
+@app.function(
+    image=image,
+    volumes=_VOLUMES,
+    timeout=TIMEOUT_EVAL_S,
+    cpu=2.0,
+    memory=4096,
+)
+def eval_kvasir_cams_method_wave(
+    arch: str = "resnet18",
+    seed: int = 42,
+    methods: Optional[List[str]] = None,
+    split: str = "test",
+    enhanced_method: str = "standard",
+    layer_set: str = "all",
+    max_images: int = -1,
+    checkpoint: Optional[str] = None,
+    output_root: Optional[str] = None,
+) -> str:
+    """
+    Orchestrator: parallel A100s — one CAM method per GPU (detach-safe).
+    """
+    from modal_runner.config import KVASIR_RUNS
+    from modal_runner.jobs.evaluate import DEFAULT_CAM_METHODS, merge_cam_wave_reports
+
+    chosen = list(methods) if methods else list(DEFAULT_CAM_METHODS)
+    root = output_root or str(KVASIR_RUNS / arch / f"seed{seed}" / "cam_eval")
+    lines: List[str] = [
+        f"eval_kvasir_cams_method_wave arch={arch} seed={seed} methods={chosen} "
+        f"max_images={max_images}"
+    ]
+    results = list(
+        eval_kvasir_cams_method.map(
+            chosen,
+            kwargs={
+                "arch": arch,
+                "checkpoint": checkpoint,
+                "split": split,
+                "seed": seed,
+                "enhanced_method": enhanced_method,
+                "layer_set": layer_set,
+                "max_images": max_images,
+                "output_root": root,
+            },
+            order_outputs=True,
+            return_exceptions=True,
+            wrap_returned_exceptions=False,
+        )
+    )
+    for method, res in zip(chosen, results):
+        if isinstance(res, BaseException):
+            line = f"FAIL  method={method}: {res}"
+        else:
+            line = f"OK    {res}"
+        print(line, flush=True)
+        lines.append(line)
+
+    volume.reload()
+    lines.append(merge_cam_wave_reports(root, chosen))
+    _commit()
+    n_fail = sum(1 for r in results if isinstance(r, BaseException))
+    if n_fail:
+        raise RuntimeError(f"{n_fail}/{len(chosen)} method(s) failed for Kvasir arch={arch} seed={seed}")
+    return "\n".join(lines)
+
+
+@app.function(
+    image=image,
+    volumes=_VOLUMES,
+    timeout=TIMEOUT_EVAL_S,
+    cpu=2.0,
+    memory=4096,
+)
+def eval_ibs_cams_method_wave(
+    arch: str = "resnet18",
+    fold: int = 0,
+    methods: Optional[List[str]] = None,
+    split: str = "test",
+    enhanced_method: str = "standard",
+    layer_set: str = "all",
+    max_images: int = -1,
+    checkpoint: Optional[str] = None,
+    output_root: Optional[str] = None,
+) -> str:
+    """Orchestrator: parallel A100s — one CAM method per GPU for one IBS fold."""
+    from modal_runner.config import IBS_RUNS
+    from modal_runner.jobs.evaluate import DEFAULT_CAM_METHODS, merge_cam_wave_reports
+
+    chosen = list(methods) if methods else list(DEFAULT_CAM_METHODS)
+    root = output_root or str(IBS_RUNS / arch / f"fold{fold}" / "cam_eval")
+    lines: List[str] = [
+        f"eval_ibs_cams_method_wave arch={arch} fold={fold} methods={chosen} "
+        f"max_images={max_images}"
+    ]
+    results = list(
+        eval_ibs_cams_method.map(
+            chosen,
+            kwargs={
+                "arch": arch,
+                "checkpoint": checkpoint,
+                "split": split,
+                "fold": fold,
+                "enhanced_method": enhanced_method,
+                "layer_set": layer_set,
+                "max_images": max_images,
+                "output_root": root,
+            },
+            order_outputs=True,
+            return_exceptions=True,
+            wrap_returned_exceptions=False,
+        )
+    )
+    for method, res in zip(chosen, results):
+        if isinstance(res, BaseException):
+            line = f"FAIL  method={method}: {res}"
+        else:
+            line = f"OK    {res}"
+        print(line, flush=True)
+        lines.append(line)
+
+    volume.reload()
+    lines.append(merge_cam_wave_reports(root, chosen))
+    _commit()
+    n_fail = sum(1 for r in results if isinstance(r, BaseException))
+    if n_fail:
+        raise RuntimeError(f"{n_fail}/{len(chosen)} method(s) failed for IBS arch={arch} fold={fold}")
+    return "\n".join(lines)
+
+
+@app.function(
+    image=image,
+    volumes=_VOLUMES,
+    # CPU-only: bootstrap / Wilcoxon do not need a GPU
+    timeout=TIMEOUT_STATS_S,
+    cpu=STATS_CPU,
+    memory=STATS_MEMORY_MB,
+)
+def run_stats(
+    input_dir: str = "",
+    output_dir: str = "",
+    n_boot: int = 2000,
+    seed: int = 0,
+) -> str:
+    from modal_runner.jobs.stats import run_stats as _job
+
+    msg = _job(
+        input_dir=input_dir or None,
+        output_dir=output_dir or None,
+        n_boot=n_boot,
+        seed=seed,
+    )
+    _commit()
+    return msg
+
+
 # ---------------------------------------------------------------------------
 # Local CLI dispatcher
 # ---------------------------------------------------------------------------
@@ -885,6 +1121,51 @@ def _build_parser() -> argparse.ArgumentParser:
     eicam.add_argument("--methods", default="", help="Comma-separated methods (default: eval_cams defaults)")
     eicam.add_argument("--max-images", type=int, default=-1)
     eicam.add_argument("--output-dir", default="", help="Override output dir on volume")
+
+    ekw = sub.add_parser(
+        "eval-kvasir-cams-wave",
+        help="Parallel A100s: one CAM method per GPU (Kvasir; logout-safe with --detach)",
+    )
+    ekw.add_argument("--arch", default="resnet18")
+    ekw.add_argument("--seed", type=int, default=42)
+    ekw.add_argument("--split", default="test")
+    ekw.add_argument("--checkpoint", default="")
+    ekw.add_argument("--enhanced-method", default="standard")
+    ekw.add_argument("--layer-set", "--layer-mode", dest="layer_set", default="all")
+    ekw.add_argument(
+        "--methods",
+        default=",".join(DEFAULT_CAM_METHODS),
+        help="Comma-separated methods (one GPU each)",
+    )
+    ekw.add_argument("--max-images", type=int, default=-1)
+    ekw.add_argument("--output-dir", default="", help="Wave root on volume")
+
+    eiw = sub.add_parser(
+        "eval-ibs-cams-wave",
+        help="Parallel A100s: one CAM method per GPU (IBS fold; logout-safe with --detach)",
+    )
+    eiw.add_argument("--arch", default="resnet18")
+    eiw.add_argument("--fold", type=int, default=0)
+    eiw.add_argument("--split", default="test")
+    eiw.add_argument("--checkpoint", default="")
+    eiw.add_argument("--enhanced-method", default="standard")
+    eiw.add_argument("--layer-set", "--layer-mode", dest="layer_set", default="all")
+    eiw.add_argument(
+        "--methods",
+        default=",".join(DEFAULT_CAM_METHODS),
+        help="Comma-separated methods (one GPU each)",
+    )
+    eiw.add_argument("--max-images", type=int, default=-1)
+    eiw.add_argument("--output-dir", default="", help="Wave root on volume")
+
+    st = sub.add_parser(
+        "stats",
+        help="CPU-only Phase 4 stats over per-image CAM CSVs (no GPU; high RAM)",
+    )
+    st.add_argument("--input-dir", default="/vol/runs", help="Root to search for per_image/*.csv")
+    st.add_argument("--output-dir", default="/vol/runs/stats")
+    st.add_argument("--n-boot", type=int, default=2000)
+    st.add_argument("--seed", type=int, default=0)
 
     return p
 
@@ -1144,6 +1425,81 @@ def main(*cli_args: str) -> None:
             methods=args.methods or None,
             max_images=args.max_images,
             output_dir=args.output_dir or None,
+        )
+        print(f"FunctionCall id: {call.object_id}", flush=True)
+        print("Monitor: https://modal.com/apps", flush=True)
+        if detached:
+            print("Detached spawn submitted — safe to close the laptop.", flush=True)
+            return
+        print(call.get())
+    elif action == "eval-kvasir-cams-wave":
+        import sys
+
+        methods = [m.strip() for m in args.methods.split(",") if m.strip()]
+        detached = ("--detach" in sys.argv) or ("-d" in sys.argv)
+        print(
+            f"Spawning eval_kvasir_cams_method_wave arch={args.arch} seed={args.seed} "
+            f"methods={methods} max_images={args.max_images} detached={detached}",
+            flush=True,
+        )
+        call = eval_kvasir_cams_method_wave.spawn(
+            arch=args.arch,
+            seed=args.seed,
+            methods=methods,
+            split=args.split,
+            enhanced_method=args.enhanced_method,
+            layer_set=args.layer_set,
+            max_images=args.max_images,
+            checkpoint=args.checkpoint or None,
+            output_root=args.output_dir or None,
+        )
+        print(f"FunctionCall id: {call.object_id}", flush=True)
+        print("Monitor: https://modal.com/apps", flush=True)
+        if detached:
+            print("Detached spawn submitted — safe to close the laptop.", flush=True)
+            return
+        print(call.get())
+    elif action == "eval-ibs-cams-wave":
+        import sys
+
+        methods = [m.strip() for m in args.methods.split(",") if m.strip()]
+        detached = ("--detach" in sys.argv) or ("-d" in sys.argv)
+        print(
+            f"Spawning eval_ibs_cams_method_wave arch={args.arch} fold={args.fold} "
+            f"methods={methods} max_images={args.max_images} detached={detached}",
+            flush=True,
+        )
+        call = eval_ibs_cams_method_wave.spawn(
+            arch=args.arch,
+            fold=args.fold,
+            methods=methods,
+            split=args.split,
+            enhanced_method=args.enhanced_method,
+            layer_set=args.layer_set,
+            max_images=args.max_images,
+            checkpoint=args.checkpoint or None,
+            output_root=args.output_dir or None,
+        )
+        print(f"FunctionCall id: {call.object_id}", flush=True)
+        print("Monitor: https://modal.com/apps", flush=True)
+        if detached:
+            print("Detached spawn submitted — safe to close the laptop.", flush=True)
+            return
+        print(call.get())
+    elif action == "stats":
+        import sys
+
+        detached = ("--detach" in sys.argv) or ("-d" in sys.argv)
+        print(
+            f"Spawning run_stats (CPU/{STATS_MEMORY_MB}MB RAM, no GPU) "
+            f"input={args.input_dir} detached={detached}",
+            flush=True,
+        )
+        call = run_stats.spawn(
+            input_dir=args.input_dir,
+            output_dir=args.output_dir,
+            n_boot=args.n_boot,
+            seed=args.seed,
         )
         print(f"FunctionCall id: {call.object_id}", flush=True)
         print("Monitor: https://modal.com/apps", flush=True)

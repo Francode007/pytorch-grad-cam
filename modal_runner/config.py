@@ -56,6 +56,18 @@ GPU_LIGHT = "T4"  # light GPU jobs (optional)
 TIMEOUT_DOWNLOAD_S = 4 * 60 * 60
 TIMEOUT_TRAIN_S = 8 * 60 * 60
 TIMEOUT_EVAL_S = 12 * 60 * 60
+TIMEOUT_STATS_S = 2 * 60 * 60
+# Stats is CPU-only; give it plenty of RAM for bootstrap over large CSVs
+STATS_CPU = 8.0
+STATS_MEMORY_MB = 65536
+# Default CAM methods for parallel method waves (Table 1 precursor)
+DEFAULT_CAM_METHODS = (
+    "gradcam",
+    "gradcampp",
+    "hirescam",
+    "enhancedcam",
+    "uniform",
+)
 
 # Architectures used in the revision matrix
 # Kvasir: vgg19 in place of densenet121 (seed 42/43 densenet runs are leftover, not in matrix)

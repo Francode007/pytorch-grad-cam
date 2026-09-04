@@ -44,6 +44,8 @@ def build_image() -> modal.Image:
             "opencv-python-headless",
             "matplotlib",
             "scikit-learn",
+            "scipy",
+            "psutil",
             "imagehash",
             "timm",
             "pandas",
