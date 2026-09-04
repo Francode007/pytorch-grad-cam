@@ -250,12 +250,6 @@ def main():
     from XAI_Enhancer_module.enhanced_combiner.extractor_v2 import EnhancedExtractorV2
 
     methods = [m.strip().lower() for m in args.methods.split(",")]
-    # Treat "uniform" as enhancedcam with type=uniform
-    if "uniform" in methods and "enhancedcam" not in methods:
-        methods.append("enhancedcam")
-        if args.enhanced_method == "standard":
-            args.enhanced_method = "uniform"
-            metrics_config["type"] = "uniform"
 
     all_results = []
     # Determine whether to run standard methods
@@ -267,13 +261,12 @@ def main():
     # Multi-layer aggregators need more than the last layer
     enhanced_layer_mode = args.layer_mode
     if (
-        args.enhanced_method in ("standard", "uniform", "stagewise", "topk", "temp", "pyramid")
-        and enhanced_layer_mode == "last"
+        enhanced_layer_mode == "last"
         and ("enhancedcam" in methods or "uniform" in methods)
     ):
         print(
-            f"INFO: Enhanced method '{args.enhanced_method}' needs multiple layers. "
-            "Switching layer-set from 'last' to 'all' for Enhanced/Uniform CAM."
+            "INFO: Enhanced/Uniform CAM needs multiple layers. "
+            "Switching layer-set from 'last' to 'all'."
         )
         enhanced_layer_mode = "all"
 
@@ -286,15 +279,9 @@ def main():
         road_imputation=args.road_imputation,
     )
 
-    # Enhanced CAM (if requested)
-    if "enhancedcam" in methods or "uniform" in methods:
-        # Map chosen base CAM to its enhanced implementation
+    def _run_multi_layer(agg_type: str, method_label: str) -> None:
         enhanced_cam_name = base_cam_map[args.base_cam]
-        method_label = (
-            "Uniform (T→∞)"
-            if metrics_config["type"] == "uniform"
-            else f"EnhancedCAM ({args.base_cam})"
-        )
+        cfg = {**metrics_config, "type": agg_type}
         evaluator = KvasirProperAUCEvaluator(
             checkpoint_path=args.checkpoint,
             data_root=args.data_root,
@@ -304,7 +291,7 @@ def main():
             layer_mode=enhanced_layer_mode,
             enhanced_cam_method=enhanced_cam_name,
             extractor_cls=EnhancedExtractorV2,
-            extractor_kwargs={**extractor_kwargs_base, "aggregation_config": metrics_config},
+            extractor_kwargs={**extractor_kwargs_base, "aggregation_config": cfg},
         )
         res = evaluator.evaluate_enhanced_cam(
             max_images=args.max_images,
@@ -322,7 +309,15 @@ def main():
             "ROAD_Std": res["road_std"],
             "Images_Evaluated": res["num_images"],
         })
-        print(f"{method_label}: Ins={res['insertion_auc_mean']:.4f} Del={res['deletion_auc_mean']:.4f} ROAD={res['road_mean']:.4f}")
+        print(
+            f"{method_label}: Ins={res['insertion_auc_mean']:.4f} "
+            f"Del={res['deletion_auc_mean']:.4f} ROAD={res['road_mean']:.4f}"
+        )
+
+    if "enhancedcam" in methods:
+        _run_multi_layer(args.enhanced_method, f"EnhancedCAM ({args.base_cam})")
+    if "uniform" in methods:
+        _run_multi_layer("uniform", "Uniform (T→∞)")
 
     # Standard methods (single last layer only)
     standard_list = [

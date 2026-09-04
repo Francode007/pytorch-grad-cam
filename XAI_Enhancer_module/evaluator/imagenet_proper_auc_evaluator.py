@@ -32,6 +32,11 @@ from XAI_Enhancer_module.utils.optimized_cam_extractor import OptimizedCamExtrac
 from XAI_Enhancer_module.utils.directory_manager import save_evaluation_results, save_analysis_data
 
 
+def _trapz(y) -> float:
+    """NumPy 2 removed np.trapz; prefer np.trapezoid with fallback."""
+    fn = getattr(np, "trapezoid", None) or getattr(np, "trapz")
+    return float(fn(y))
+
 
 class _ImageNetDataset(Dataset):
     """Dataset wrapper for ImageNet images to enable multi-threaded loading."""
@@ -220,7 +225,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         if not confidences:
             return [], 0.0
             
-        auc = float(np.trapz(confidences)) / len(confidences)
+        auc = _trapz(confidences) / len(confidences)
         return confidences, auc
     def compute_deletion_auc(self, image_tensor: torch.Tensor, 
                             saliency_map: np.ndarray, predicted_label: int,
@@ -292,7 +297,7 @@ class ImageNetProperAUCEvaluator(ProperAUCEvaluator):
         if not confidences:
             return [], 0.0
             
-        auc = float(np.trapz(confidences)) / len(confidences)
+        auc = _trapz(confidences) / len(confidences)
         return confidences, auc
     
     def evaluate_road(self, image_tensor: torch.Tensor, 

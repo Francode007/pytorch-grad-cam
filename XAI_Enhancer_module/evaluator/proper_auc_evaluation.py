@@ -180,7 +180,8 @@ class ProperAUCEvaluator:
             scores[step + 1] = prob
         
         # Calculate AUC using trapezoidal rule, normalized to [0,1]
-        auc = np.trapz(scores) / len(scores)
+        _trapz = getattr(np, "trapezoid", None) or np.trapz
+        auc = float(_trapz(scores)) / len(scores)
         
         return scores, auc
     
@@ -241,7 +242,8 @@ class ProperAUCEvaluator:
             scores[step + 1] = prob
         
         # Calculate AUC using trapezoidal rule, normalized to [0,1]
-        auc = np.trapz(scores) / len(scores)
+        _trapz = getattr(np, "trapezoid", None) or np.trapz
+        auc = float(_trapz(scores)) / len(scores)
         
         return scores, auc
     
