@@ -104,6 +104,7 @@ def eval_kvasir_cams(
     step_size: int = 224,
     road_seed: int = 0,
     output_dir: Optional[str] = None,
+    device: str = "cuda",
     extra_args: Optional[Sequence[str]] = None,
 ) -> str:
     from XAI_Enhancer_module.common.resource_monitor import ResourceMonitor
@@ -132,7 +133,7 @@ def eval_kvasir_cams(
         "--road-seed", str(road_seed),
         "--max-images", str(max_images),
         "--output-dir", out,
-        "--device", "cuda",
+        "--device", device,
     ]
     if methods:
         method_str = methods if isinstance(methods, str) else ",".join(methods)
@@ -142,12 +143,32 @@ def eval_kvasir_cams(
     label = f"kvasir_cams arch={arch} seed={seed} methods={methods}"
     with ResourceMonitor(label=label) as mon:
         run_module("XAI_Enhancer_module.kvasir.eval_cams", args)
-    mon.write(Path(out) / "resources.json")
+    # Prefer in-process (child) resources.json if it has GPU alloc; merge peaks
+    child_res = Path(out) / "resources.json"
+    report = mon.report.to_dict()
+    if child_res.exists():
+        try:
+            prev = json.loads(child_res.read_text())
+            for key in (
+                "gpu_peak_alloc_mb",
+                "gpu_peak_reserved_mb",
+                "gpu_peak_used_mb",
+                "ram_peak_mb",
+                "wall_s",
+            ):
+                report[key] = max(float(report.get(key) or 0), float(prev.get(key) or 0))
+            if prev.get("gpu_device"):
+                report["gpu_device"] = prev["gpu_device"]
+                report["used_gpu"] = True
+        except Exception:
+            pass
+    child_res.write_text(json.dumps(report, indent=2, sort_keys=True))
     return (
         f"Kvasir CAM eval -> {out} "
-        f"(wall={mon.report.wall_s:.1f}s RAM={mon.report.ram_peak_mb:.0f}MB "
-        f"GPU_used={mon.report.gpu_peak_used_mb:.0f}MB "
-        f"GPU_alloc={mon.report.gpu_peak_alloc_mb:.0f}MB)"
+        f"(wall={report.get('wall_s', mon.report.wall_s):.1f}s "
+        f"RAM={report.get('ram_peak_mb', mon.report.ram_peak_mb):.0f}MB "
+        f"GPU_used={report.get('gpu_peak_used_mb', mon.report.gpu_peak_used_mb):.0f}MB "
+        f"GPU_alloc={report.get('gpu_peak_alloc_mb', mon.report.gpu_peak_alloc_mb):.0f}MB)"
     )
 
 
@@ -166,6 +187,7 @@ def eval_ibs_cams(
     step_size: int = 224,
     road_seed: int = 0,
     output_dir: Optional[str] = None,
+    device: str = "cuda",
     extra_args: Optional[Sequence[str]] = None,
 ) -> str:
     from XAI_Enhancer_module.common.resource_monitor import ResourceMonitor
@@ -195,7 +217,7 @@ def eval_ibs_cams(
         "--road-seed", str(road_seed),
         "--max-images", str(max_images),
         "--output-dir", out,
-        "--device", "cuda",
+        "--device", device,
     ]
     if methods:
         method_str = methods if isinstance(methods, str) else ",".join(methods)
@@ -205,12 +227,31 @@ def eval_ibs_cams(
     label = f"ibs_cams arch={arch} fold={fold} methods={methods}"
     with ResourceMonitor(label=label) as mon:
         run_module("XAI_Enhancer_module.ibs.eval_cams", args)
-    mon.write(Path(out) / "resources.json")
+    child_res = Path(out) / "resources.json"
+    report = mon.report.to_dict()
+    if child_res.exists():
+        try:
+            prev = json.loads(child_res.read_text())
+            for key in (
+                "gpu_peak_alloc_mb",
+                "gpu_peak_reserved_mb",
+                "gpu_peak_used_mb",
+                "ram_peak_mb",
+                "wall_s",
+            ):
+                report[key] = max(float(report.get(key) or 0), float(prev.get(key) or 0))
+            if prev.get("gpu_device"):
+                report["gpu_device"] = prev["gpu_device"]
+                report["used_gpu"] = True
+        except Exception:
+            pass
+    child_res.write_text(json.dumps(report, indent=2, sort_keys=True))
     return (
         f"IBS CAM eval -> {out} "
-        f"(wall={mon.report.wall_s:.1f}s RAM={mon.report.ram_peak_mb:.0f}MB "
-        f"GPU_used={mon.report.gpu_peak_used_mb:.0f}MB "
-        f"GPU_alloc={mon.report.gpu_peak_alloc_mb:.0f}MB)"
+        f"(wall={report.get('wall_s', mon.report.wall_s):.1f}s "
+        f"RAM={report.get('ram_peak_mb', mon.report.ram_peak_mb):.0f}MB "
+        f"GPU_used={report.get('gpu_peak_used_mb', mon.report.gpu_peak_used_mb):.0f}MB "
+        f"GPU_alloc={report.get('gpu_peak_alloc_mb', mon.report.gpu_peak_alloc_mb):.0f}MB)"
     )
 
 

@@ -911,6 +911,199 @@ def run_stats(
 
 
 # ---------------------------------------------------------------------------
+# CAM smoke benchmark (GPU vs CPU × RAM) — detach-safe orchestrator
+# ---------------------------------------------------------------------------
+
+
+@app.function(
+    image=image,
+    volumes=_VOLUMES,
+    gpu=GPU_TRAIN,
+    timeout=TIMEOUT_EVAL_S,
+    memory=65536,
+)
+def smoke_cam_gpu(
+    arch: str = "resnet18",
+    seed: int = 42,
+    max_images: int = 8,
+    methods: Optional[List[str]] = None,
+    output_dir: str = "",
+) -> dict:
+    from modal_runner.jobs.cam_smoke import run_one_smoke
+    from modal_runner.jobs.evaluate import DEFAULT_CAM_METHODS
+
+    chosen = list(methods) if methods else list(DEFAULT_CAM_METHODS)
+    out = output_dir or f"/vol/runs/smoke/cam_bench/{arch}_seed{seed}/gpu_a100"
+    result = run_one_smoke(
+        label="gpu_a100",
+        arch=arch,
+        seed=seed,
+        methods=chosen,
+        max_images=max_images,
+        device="cuda",
+        output_dir=out,
+    )
+    _commit()
+    return result
+
+
+@app.function(
+    image=image,
+    volumes=_VOLUMES,
+    # CPU-only — modest RAM
+    timeout=TIMEOUT_EVAL_S,
+    cpu=8.0,
+    memory=16384,
+)
+def smoke_cam_cpu_16g(
+    arch: str = "resnet18",
+    seed: int = 42,
+    max_images: int = 8,
+    methods: Optional[List[str]] = None,
+    output_dir: str = "",
+) -> dict:
+    from modal_runner.jobs.cam_smoke import run_one_smoke
+
+    # Keep CPU smoke light: enhanced alone is the bottleneck
+    chosen = list(methods) if methods else ["gradcam", "enhancedcam"]
+    out = output_dir or f"/vol/runs/smoke/cam_bench/{arch}_seed{seed}/cpu_ram16g"
+    result = run_one_smoke(
+        label="cpu_ram16g",
+        arch=arch,
+        seed=seed,
+        methods=chosen,
+        max_images=max_images,
+        device="cpu",
+        output_dir=out,
+    )
+    _commit()
+    return result
+
+
+@app.function(
+    image=image,
+    volumes=_VOLUMES,
+    # CPU-only — high RAM (same as stats)
+    timeout=TIMEOUT_EVAL_S,
+    cpu=8.0,
+    memory=STATS_MEMORY_MB,
+)
+def smoke_cam_cpu_64g(
+    arch: str = "resnet18",
+    seed: int = 42,
+    max_images: int = 8,
+    methods: Optional[List[str]] = None,
+    output_dir: str = "",
+) -> dict:
+    from modal_runner.jobs.cam_smoke import run_one_smoke
+
+    chosen = list(methods) if methods else ["gradcam", "enhancedcam"]
+    out = output_dir or f"/vol/runs/smoke/cam_bench/{arch}_seed{seed}/cpu_ram64g"
+    result = run_one_smoke(
+        label="cpu_ram64g",
+        arch=arch,
+        seed=seed,
+        methods=chosen,
+        max_images=max_images,
+        device="cpu",
+        output_dir=out,
+    )
+    _commit()
+    return result
+
+
+@app.function(
+    image=image,
+    volumes=_VOLUMES,
+    timeout=TIMEOUT_EVAL_S,
+    cpu=2.0,
+    memory=4096,
+)
+def smoke_cam_benchmark(
+    arch: str = "resnet18",
+    seed: int = 42,
+    max_images: int = 8,
+    methods: Optional[List[str]] = None,
+    skip_cpu: bool = False,
+) -> str:
+    """
+    Orchestrator: GPU A100 + CPU@16GB + CPU@64GB smokes, then write estimate.
+
+    Detach-safe: spawn this one function; children are mapped from the remote
+    orchestrator so laptop sleep does not cancel them.
+    """
+    from modal_runner.jobs.cam_smoke import build_estimate, write_benchmark_report
+    from modal_runner.jobs.evaluate import DEFAULT_CAM_METHODS
+
+    chosen = list(methods) if methods else list(DEFAULT_CAM_METHODS)
+    root = f"/vol/runs/smoke/cam_bench/{arch}_seed{seed}"
+    lines = [
+        f"smoke_cam_benchmark arch={arch} seed={seed} n={max_images} methods={chosen}"
+    ]
+
+    # GPU (full method list)
+    gpu_res = smoke_cam_gpu.remote(
+        arch=arch,
+        seed=seed,
+        max_images=max_images,
+        methods=chosen,
+        output_dir=f"{root}/gpu_a100",
+    )
+    lines.append(
+        f"OK gpu_a100 wall={gpu_res.get('wall_s', 0):.1f}s "
+        f"RAM={gpu_res.get('ram_peak_mb', 0):.0f}MB "
+        f"GPU={gpu_res.get('gpu_peak_used_mb', 0):.0f}MB"
+    )
+    variants = [gpu_res]
+
+    if not skip_cpu:
+        # CPU variants (lighter method list for tractable runtime)
+        cpu_methods = [m for m in ("gradcam", "enhancedcam") if m in chosen] or ["enhancedcam"]
+        cpu16 = smoke_cam_cpu_16g.remote(
+            arch=arch,
+            seed=seed,
+            max_images=max_images,
+            methods=cpu_methods,
+            output_dir=f"{root}/cpu_ram16g",
+        )
+        cpu64 = smoke_cam_cpu_64g.remote(
+            arch=arch,
+            seed=seed,
+            max_images=max_images,
+            methods=cpu_methods,
+            output_dir=f"{root}/cpu_ram64g",
+        )
+        for res in (cpu16, cpu64):
+            lines.append(
+                f"OK {res.get('label')} wall={res.get('wall_s', 0):.1f}s "
+                f"RAM={res.get('ram_peak_mb', 0):.0f}MB"
+            )
+            variants.append(res)
+
+    estimate = build_estimate(
+        smoke=gpu_res,
+        n_smoke=max_images,
+        methods=chosen,
+        parallel_methods=True,
+    )
+    volume.reload()
+    path = write_benchmark_report(
+        output_dir=root,
+        variants=variants,
+        estimate=estimate,
+    )
+    _commit()
+    lines.append(f"Report -> {path}")
+    lines.append(
+        f"ESTIMATE total CAM waves ≈ {estimate['hours_cam_matrix_waves_serial']} h "
+        f"(+ stats ≈ {estimate['hours_stats_approx']} h) "
+        f"→ grand ≈ {estimate['hours_total_approx']} h"
+    )
+    print("\n".join(lines), flush=True)
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Local CLI dispatcher
 # ---------------------------------------------------------------------------
 
@@ -1166,6 +1359,24 @@ def _build_parser() -> argparse.ArgumentParser:
     st.add_argument("--output-dir", default="/vol/runs/stats")
     st.add_argument("--n-boot", type=int, default=2000)
     st.add_argument("--seed", type=int, default=0)
+
+    sm = sub.add_parser(
+        "smoke-cam-benchmark",
+        help="Detachable smoke: GPU vs CPU×RAM timings + full-matrix time estimate (8 images)",
+    )
+    sm.add_argument("--arch", default="resnet18")
+    sm.add_argument("--seed", type=int, default=42)
+    sm.add_argument("--max-images", type=int, default=8)
+    sm.add_argument(
+        "--methods",
+        default=",".join(DEFAULT_CAM_METHODS),
+        help="Methods for GPU smoke (CPU variants use gradcam,enhancedcam)",
+    )
+    sm.add_argument(
+        "--skip-cpu",
+        action="store_true",
+        help="Only run GPU smoke (faster; skips RAM comparison)",
+    )
 
     return p
 
@@ -1503,6 +1714,33 @@ def main(*cli_args: str) -> None:
         )
         print(f"FunctionCall id: {call.object_id}", flush=True)
         print("Monitor: https://modal.com/apps", flush=True)
+        if detached:
+            print("Detached spawn submitted — safe to close the laptop.", flush=True)
+            return
+        print(call.get())
+    elif action == "smoke-cam-benchmark":
+        import sys
+
+        methods = [m.strip() for m in args.methods.split(",") if m.strip()]
+        detached = ("--detach" in sys.argv) or ("-d" in sys.argv)
+        print(
+            f"Spawning smoke_cam_benchmark arch={args.arch} seed={args.seed} "
+            f"n={args.max_images} skip_cpu={args.skip_cpu} detached={detached}",
+            flush=True,
+        )
+        call = smoke_cam_benchmark.spawn(
+            arch=args.arch,
+            seed=args.seed,
+            max_images=args.max_images,
+            methods=methods,
+            skip_cpu=args.skip_cpu,
+        )
+        print(f"FunctionCall id: {call.object_id}", flush=True)
+        print("Monitor: https://modal.com/apps", flush=True)
+        print(
+            "Artifacts: /vol/runs/smoke/cam_bench/<arch>_seed<seed>/smoke_benchmark.{json,md}",
+            flush=True,
+        )
         if detached:
             print("Detached spawn submitted — safe to close the laptop.", flush=True)
             return
